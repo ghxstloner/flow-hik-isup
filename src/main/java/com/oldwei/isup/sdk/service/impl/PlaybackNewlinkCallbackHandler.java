@@ -8,6 +8,8 @@ import com.oldwei.isup.sdk.structure.NET_EHOME_PLAYBACK_NEWLINK_CB_INFO;
 import com.sun.jna.Pointer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
@@ -15,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Service("playbackNewlinkCallbackHandler")
+@ConditionalOnProperty(prefix = "hik.features.playback", name = "enabled", havingValue = "true")
+@ConditionalOnBean(IHikISUPStream.class)
 @RequiredArgsConstructor
 public class PlaybackNewlinkCallbackHandler implements PLAYBACK_NEWLINK_CB {
 

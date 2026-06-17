@@ -13,85 +13,81 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
- * 设备内存缓存服务
- * 替代数据库存储，设备信息存储在内存中，随着程序的启动而创建，程序停止而销毁
+ * In-memory device registry.
+ * Device state is created on application startup and cleared when the process exits.
  */
 @Slf4j
 @Service
 public class DeviceCacheService {
 
     /**
-     * 设备ID -> Device对象的映射
+     * Device ID to device record.
      */
     private final Map<String, Device> deviceMap = new ConcurrentHashMap<>();
 
     /**
-     * 登录句柄 -> 设备ID的映射
+     * Login handle to device ID.
      */
     private final Map<Integer, String> loginIdToDeviceIdMap = new ConcurrentHashMap<>();
 
     /**
-     * 保存或更新设备信息
+     * Save or update device state.
      *
-     * @param device 设备对象
+     * @param device device record
      */
     public void saveOrUpdate(Device device) {
         if (device == null || device.getDeviceId() == null) {
-            log.warn("设备信息或设备ID为空，无法保存");
+            log.warn("Device record or device ID is empty; skipping cache update.");
             return;
         }
 
-        // 保存到设备映射
         deviceMap.put(device.getDeviceId(), device);
 
-        // 更新登录句柄映射
         if (device.getLoginId() != null && device.getLoginId() > -1) {
             loginIdToDeviceIdMap.put(device.getLoginId(), device.getDeviceId());
         }
 
-        log.debug("设备信息已缓存: {}, 通道数: {}", device.getDeviceId(), device.getChannels().size());
+        log.debug("Device cached: {}, channel count: {}", device.getDeviceId(), device.getChannels().size());
     }
 
     /**
-     * 注册设备的登录句柄（设备上线时调用）
-     * 只记录 loginId 到 deviceId 的映射，不创建设备记录
-     * 具体的设备信息由同步任务来创建和更新
+     * Register a device login handle when the device comes online.
      *
-     * @param loginId  登录句柄
-     * @param deviceId 设备ID
+     * @param loginId  login handle
+     * @param deviceId device ID
      */
     public void registerLoginId(Integer loginId, String deviceId) {
         if (loginId != null && loginId > -1 && deviceId != null) {
             loginIdToDeviceIdMap.put(loginId, deviceId);
-            log.info("设备登录句柄已注册: deviceId={}, loginId={}", deviceId, loginId);
+            log.info("Device login handle registered: deviceId={}, loginId={}", deviceId, loginId);
         }
     }
 
     /**
-     * 根据设备ID获取设备
+     * Get a device by device ID.
      *
-     * @param deviceId 设备ID
-     * @return Optional包装的设备对象
+     * @param deviceId device ID
+     * @return device record
      */
     public Optional<Device> getByDeviceId(String deviceId) {
         return Optional.ofNullable(deviceMap.get(deviceId));
     }
 
     /**
-     * 根据登录句柄获取设备ID
+     * Get a device ID by login handle.
      *
-     * @param loginId 登录句柄
-     * @return 设备ID
+     * @param loginId login handle
+     * @return device ID
      */
     public String getDeviceIdByLoginId(Integer loginId) {
         return loginIdToDeviceIdMap.get(loginId);
     }
 
     /**
-     * 根据登录句柄获取设备
+     * Get a device by login handle.
      *
-     * @param loginId 登录句柄
-     * @return 设备对象
+     * @param loginId login handle
+     * @return device record
      */
     public Optional<Device> getByLoginId(Integer loginId) {
         String deviceId = loginIdToDeviceIdMap.get(loginId);
@@ -102,19 +98,19 @@ public class DeviceCacheService {
     }
 
     /**
-     * 获取所有设备列表
+     * List all cached devices.
      *
-     * @return 所有设备列表
+     * @return all cached devices
      */
     public List<Device> listAll() {
         return new ArrayList<>(deviceMap.values());
     }
 
     /**
-     * 根据条件查询设备列表
+     * Query cached devices.
      *
-     * @param predicate 过滤条件
-     * @return 符合条件的设备列表
+     * @param predicate filter predicate
+     * @return matching devices
      */
     public List<Device> list(Predicate<Device> predicate) {
         return deviceMap.values().stream()
@@ -123,45 +119,44 @@ public class DeviceCacheService {
     }
 
     /**
-     * 根据设备ID删除设备
+     * Remove a device by device ID.
      *
-     * @param deviceId 设备ID
+     * @param deviceId device ID
      */
     public void removeByDeviceId(String deviceId) {
         Device device = deviceMap.remove(deviceId);
         if (device != null) {
-            // 移除loginId映射
             loginIdToDeviceIdMap.entrySet().removeIf(entry -> entry.getValue().equals(deviceId));
-            log.debug("设备已从缓存移除: {}", deviceId);
+            log.debug("Device removed from cache: {}", deviceId);
         }
     }
 
     /**
-     * 根据登录句柄删除设备
+     * Remove a device by login handle.
      *
-     * @param loginId 登录句柄
+     * @param loginId login handle
      */
     public void removeByLoginId(Integer loginId) {
         String deviceId = loginIdToDeviceIdMap.remove(loginId);
         if (deviceId != null) {
             deviceMap.remove(deviceId);
-            log.debug("已移除登录句柄{}对应的设备: {}", loginId, deviceId);
+            log.debug("Removed device for loginId {}: {}", loginId, deviceId);
         }
     }
 
     /**
-     * 清空所有缓存
+     * Clear all cached state.
      */
     public void clear() {
         deviceMap.clear();
         loginIdToDeviceIdMap.clear();
-        log.info("设备缓存已清空");
+        log.info("Device cache cleared.");
     }
 
     /**
-     * 获取缓存的设备数量
+     * Get the cached device count.
      *
-     * @return 设备数量
+     * @return device count
      */
     public int size() {
         return deviceMap.size();

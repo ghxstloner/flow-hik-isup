@@ -35,7 +35,7 @@ public class FaceDetectionController {
         
         Optional<Device> deviceOpt = deviceCacheService.getByDeviceId(deviceId);
         if (deviceOpt.isEmpty()) {
-            return R.fail("设备不存在");
+            return R.fail("Device does not exist.");
         }
         
         Device device = deviceOpt.get();

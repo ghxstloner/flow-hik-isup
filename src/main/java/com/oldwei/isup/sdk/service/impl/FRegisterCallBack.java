@@ -1,8 +1,8 @@
 package com.oldwei.isup.sdk.service.impl;
 
+import com.oldwei.isup.config.HikFeatureProperties;
 import com.oldwei.isup.config.HikIsupProperties;
 import com.oldwei.isup.model.Device;
-import com.oldwei.isup.sdk.isapi.ISAPIService;
 import com.oldwei.isup.sdk.service.DEVICE_REGISTER_CB;
 import com.oldwei.isup.sdk.service.HCISUPCMS;
 import com.oldwei.isup.sdk.service.IHikISUPAlarm;
@@ -14,6 +14,7 @@ import com.oldwei.isup.service.DeviceCacheService;
 import com.sun.jna.Pointer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
@@ -23,126 +24,83 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class FRegisterCallBack implements DEVICE_REGISTER_CB {
     private final HikIsupProperties hikIsupProperties;
+    private final HikFeatureProperties hikFeatureProperties;
     private final HCISUPCMS hcisupcms;
     private final DeviceCacheService deviceCacheService;
-    private final IHikISUPAlarm hikISUPAlarm;
-    private final ISAPIService isapiService;
-    private final CmsUtil cmsUtil;
+    private final ObjectProvider<IHikISUPAlarm> hikISUPAlarmProvider;
 
     @Override
     public boolean invoke(int lUserID, int dwDataType, Pointer pOutBuffer, int dwOutLen, Pointer pInBuffer, int dwInLen, Pointer pUser) {
-        log.info("设备注册状态回调 FRegisterCallBack, dwDataType: {}, lUserID: {}", dwDataType, lUserID);
+        log.info("Device registration callback received, dwDataType: {}, lUserID: {}", dwDataType, lUserID);
         NET_EHOME_DEV_REG_INFO_V12 strDevRegInfo = new NET_EHOME_DEV_REG_INFO_V12();
         Pointer pDevRegInfo = strDevRegInfo.getPointer();
         switch (dwDataType) {
             case EHOME_REGISTER_TYPE.ENUM_DEV_ON: // 0
-                // 设备上线回调
+                // Device online callback.
                 strDevRegInfo.write();
                 pDevRegInfo.write(0, pOutBuffer.getByteArray(0, strDevRegInfo.size()), 0, strDevRegInfo.size());
                 strDevRegInfo.read();
-//                log.info("""
-//                                设备注册信息
-//                                dwSize: {}
-//                                dwNetUnitType: {}
-//                                byDeviceID: {}
-//                                byFirmwareVersion: {}
-//                                struDevAdd.szIP: {}
-//                                struDevAdd.wPort: {}
-//                                dwDevType: {}
-//                                dwManufacture: {}
-//                                byPassWord: {}
-//                                sDeviceSerial: {}
-//                                byReliableTransmission: {}
-//                                byWebSocketTransmission: {}
-//                                bySupportRedirect: {}
-//                                byDevProtocolVersion (hex): {}
-//                                bySessionKey (hex): {}
-//                                byMarketType: {}
-//                                """,
-//                        strDevRegInfo.struRegInfo.dwSize,
-//                        strDevRegInfo.struRegInfo.dwNetUnitType,
-//                        new String(strDevRegInfo.struRegInfo.byDeviceID).trim(),
-//                        new String(strDevRegInfo.struRegInfo.byFirmwareVersion).trim(),
-//                        new String(strDevRegInfo.struRegInfo.struDevAdd.szIP).trim(),
-//                        strDevRegInfo.struRegInfo.struDevAdd.wPort,
-//                        strDevRegInfo.struRegInfo.dwDevType,
-//                        strDevRegInfo.struRegInfo.dwManufacture,
-//                        new String(strDevRegInfo.struRegInfo.byPassWord).trim(),
-//                        new String(strDevRegInfo.struRegInfo.sDeviceSerial).trim(),
-//                        strDevRegInfo.struRegInfo.byReliableTransmission,
-//                        strDevRegInfo.struRegInfo.byWebSocketTransmission,
-//                        strDevRegInfo.struRegInfo.bySupportRedirect,
-//                        new String(strDevRegInfo.struRegInfo.byDevProtocolVersion),
-//                        new String(strDevRegInfo.struRegInfo.bySessionKey),
-//                        strDevRegInfo.struRegInfo.byMarketType
-//                );
-//                log.info("设备注册地址: {}", strDevRegInfo.struRegAddr.toString());
                 NET_EHOME_SERVER_INFO_V50 strEhomeServerInfo = new NET_EHOME_SERVER_INFO_V50();
                 strEhomeServerInfo.read();
-                //strEhomeServerInfo.dwSize = strEhomeServerInfo.size();
-                //设置报警服务器地址、端口、类型
-                byte[] byCmsIP = hikIsupProperties.getAlarmServer().getIp().getBytes();
-                System.arraycopy(byCmsIP, 0, strEhomeServerInfo.struUDPAlarmSever.szIP, 0, byCmsIP.length);
-                System.arraycopy(byCmsIP, 0, strEhomeServerInfo.struTCPAlarmSever.szIP, 0, byCmsIP.length);
-                //报警服务器类型：0- 只支持UDP协议上报，1- 支持UDP、TCP两种协议上报 2-MQTT
+                if (hikFeatureProperties.getAlarm().isEnabled()) {
+                    byte[] byCmsIP = hikIsupProperties.getAlarmServer().getIp().getBytes();
+                    System.arraycopy(byCmsIP, 0, strEhomeServerInfo.struUDPAlarmSever.szIP, 0, byCmsIP.length);
+                    System.arraycopy(byCmsIP, 0, strEhomeServerInfo.struTCPAlarmSever.szIP, 0, byCmsIP.length);
+                    strEhomeServerInfo.dwAlarmServerType = Integer.parseInt(hikIsupProperties.getAlarmServer().getType());
+                    strEhomeServerInfo.struTCPAlarmSever.wPort = Short.parseShort(hikIsupProperties.getAlarmServer().getTcpPort());
+                    strEhomeServerInfo.struUDPAlarmSever.wPort = Short.parseShort(hikIsupProperties.getAlarmServer().getUdpPort());
+                }
 
-                strEhomeServerInfo.dwAlarmServerType = Integer.parseInt(hikIsupProperties.getAlarmServer().getType());
-                strEhomeServerInfo.struTCPAlarmSever.wPort = Short.parseShort(hikIsupProperties.getAlarmServer().getTcpPort());
-                strEhomeServerInfo.struUDPAlarmSever.wPort = Short.parseShort(hikIsupProperties.getAlarmServer().getUdpPort());
+                if (hikFeatureProperties.getStorage().isEnabled()) {
+                    byte[] byCloudAccessKey = "test".getBytes();
+                    System.arraycopy(byCloudAccessKey, 0, strEhomeServerInfo.byClouldAccessKey, 0, byCloudAccessKey.length);
+                    byte[] byCloudSecretKey = "12345".getBytes();
+                    System.arraycopy(byCloudSecretKey, 0, strEhomeServerInfo.byClouldSecretKey, 0, byCloudSecretKey.length);
+                    strEhomeServerInfo.dwClouldPoolId = 1;
 
-                byte[] byClouldAccessKey = "test".getBytes();
-                System.arraycopy(byClouldAccessKey, 0, strEhomeServerInfo.byClouldAccessKey, 0, byClouldAccessKey.length);
-                byte[] byClouldSecretKey = "12345".getBytes();
-                System.arraycopy(byClouldSecretKey, 0, strEhomeServerInfo.byClouldSecretKey, 0, byClouldSecretKey.length);
-                strEhomeServerInfo.dwClouldPoolId = 1;
-
-                //设置图片存储服务器地址、端口、类型
-                byte[] bySSIP = hikIsupProperties.getPicServer().getIp().getBytes();
-                System.arraycopy(bySSIP, 0, strEhomeServerInfo.struPictureSever.szIP, 0, bySSIP.length);
-                strEhomeServerInfo.struPictureSever.wPort = Short.parseShort(hikIsupProperties.getPicServer().getPort());
-                strEhomeServerInfo.dwPicServerType = Integer.parseInt(hikIsupProperties.getPicServer().getType());    //存储服务器（SS）类型：0-Tomcat，1-VRB，2-云存储，3-KMS，4-ISUP5.0。
+                    byte[] bySSIP = hikIsupProperties.getPicServer().getIp().getBytes();
+                    System.arraycopy(bySSIP, 0, strEhomeServerInfo.struPictureSever.szIP, 0, bySSIP.length);
+                    strEhomeServerInfo.struPictureSever.wPort = Short.parseShort(hikIsupProperties.getPicServer().getPort());
+                    strEhomeServerInfo.dwPicServerType = Integer.parseInt(hikIsupProperties.getPicServer().getType());
+                }
                 strEhomeServerInfo.write();
                 dwInLen = strEhomeServerInfo.size();
                 pInBuffer.write(0, strEhomeServerInfo.getPointer().getByteArray(0, dwInLen), 0, dwInLen);
 
                 String deviceId = new String(strDevRegInfo.struRegInfo.byDeviceID).trim();
-                log.info("设备上线, DeviceID: {}, LoginID: {}", deviceId, lUserID);
-                // 注册登录句柄映射
+                log.info("Device online, DeviceID: {}, LoginID: {}", deviceId, lUserID);
                 deviceCacheService.registerLoginId(lUserID, deviceId);
-                // 获取或创建设备对象
                 Device device = deviceCacheService.getByDeviceId(deviceId).orElse(new Device());
                 device.setDeviceId(deviceId);
 //                device.setDeviceType(deviceType);
                 device.setIsOnline(1);
                 device.setLoginId(lUserID);
-                // 更新通道列表
 //                updateDeviceChannels(device, onlineChannelIds);
                 deviceCacheService.saveOrUpdate(device);
                 break;
             case EHOME_REGISTER_TYPE.ENUM_DEV_OFF:// TODO 1
-                log.info("设备下线回调 Device off, lUserID is: {}", lUserID);
+                log.info("Device offline callback, lUserID: {}", lUserID);
                 Optional<Device> deviceOpt = deviceCacheService.getByLoginId(lUserID);
                 if (deviceOpt.isEmpty()) {
-                    log.warn("未找到登录句柄{}对应的设备", lUserID);
+                    log.warn("No device found for loginId: {}", lUserID);
                 } else {
                     Device deviceOffline = deviceOpt.get();
                     deviceCacheService.removeByLoginId(lUserID);
-                    log.info("设备{}下线，影响{}个通道", deviceOffline.getDeviceId(), deviceOffline.getChannels().size());
-                    // TODO 如果设备正在预览，停止该设备的所有预览流
+                    log.info("Device {} is offline.", deviceOffline.getDeviceId());
                 }
                 break;
             case EHOME_REGISTER_TYPE.ENUM_DEV_AUTH:// 3
-                // Ehome5.0设备认证回调
+                // EHome 5.0 device authentication callback.
                 strDevRegInfo.write();
                 pDevRegInfo.write(0, pOutBuffer.getByteArray(0, strDevRegInfo.size()), 0, strDevRegInfo.size());
                 strDevRegInfo.read();
-                String szEHomeKey = hikIsupProperties.getIsupKey(); //ISUP5.0登录校验值
+                String szEHomeKey = hikIsupProperties.getIsupKey();
                 byte[] bs = szEHomeKey.getBytes();
                 pInBuffer.write(0, bs, 0, szEHomeKey.length());
-                log.info("Ehome5.0设备认证回调 Device auth, DeviceID is: {}", new String(strDevRegInfo.struRegInfo.byDeviceID).trim());
+                log.info("EHome 5.0 device auth callback, DeviceID: {}", new String(strDevRegInfo.struRegInfo.byDeviceID).trim());
                 break;
             case EHOME_REGISTER_TYPE.ENUM_DEV_SESSIONKEY:// 4
-                // Ehome5.0设备Sessionkey回调
+                // EHome 5.0 device session key callback.
                 strDevRegInfo.write();
                 pDevRegInfo.write(0, pOutBuffer.getByteArray(0, strDevRegInfo.size()), 0, strDevRegInfo.size());
                 strDevRegInfo.read();
@@ -152,8 +110,11 @@ public class FRegisterCallBack implements DEVICE_REGISTER_CB {
                 struSessionKey.write();
                 Pointer pSessionKey = struSessionKey.getPointer();
                 hcisupcms.NET_ECMS_SetDeviceSessionKey(pSessionKey);
-                log.info("Ehome5.0设备Sessionkey回调 Device session key, DeviceID is: {}", new String(strDevRegInfo.struRegInfo.byDeviceID).trim());
-                hikISUPAlarm.NET_EALARM_SetDeviceSessionKey(pSessionKey);
+                log.info("EHome 5.0 device session key callback, DeviceID: {}", new String(strDevRegInfo.struRegInfo.byDeviceID).trim());
+                IHikISUPAlarm hikISUPAlarm = hikISUPAlarmProvider.getIfAvailable();
+                if (hikFeatureProperties.getAlarm().isEnabled() && hikISUPAlarm != null) {
+                    hikISUPAlarm.NET_EALARM_SetDeviceSessionKey(pSessionKey);
+                }
                 break;
             case EHOME_REGISTER_TYPE.ENUM_DEV_DAS_REQ: // 5 HCISUPCMS.ENUM_DEV_DAS_REQ
                 String dasInfo = "{\n" +
@@ -168,7 +129,7 @@ public class FRegisterCallBack implements DEVICE_REGISTER_CB {
                         "}";
                 byte[] bs1 = dasInfo.getBytes();
                 pInBuffer.write(0, bs1, 0, dasInfo.length());
-                log.info("Ehome5.0设备DAS请求回调 Device DAS request: {}", dasInfo);
+                log.info("EHome 5.0 device DAS request callback: {}", dasInfo);
                 break;
             default:
                 log.info("FRegisterCallBack default type: {}", dwDataType);

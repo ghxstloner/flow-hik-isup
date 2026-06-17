@@ -10,6 +10,8 @@ import com.oldwei.isup.service.IMediaStreamService;
 import com.oldwei.isup.util.WebFluxHttpUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
@@ -32,6 +34,8 @@ import java.util.UUID;
 @Slf4j
 @RestController
 @RequestMapping("/api/devices/{deviceId}/voice")
+@ConditionalOnProperty(prefix = "hik.features.voice", name = "enabled", havingValue = "true")
+@ConditionalOnBean(IMediaStreamService.class)
 @RequiredArgsConstructor
 public class VoiceController {
 
@@ -77,7 +81,7 @@ public class VoiceController {
 
         // 构建TTS请求数据
         List<DataItem> dataList = Arrays.asList(
-                new DataItem("路人甲", dataItem.getText(), "zh-CN-YunjianNeural", "0%")
+                new DataItem("Guest", dataItem.getText(), "zh-CN-YunjianNeural", "0%")
         );
         TtsRequest request = new TtsRequest();
         request.setData(dataList);

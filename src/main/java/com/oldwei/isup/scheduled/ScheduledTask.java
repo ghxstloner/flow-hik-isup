@@ -9,6 +9,7 @@ import com.oldwei.isup.sdk.service.impl.CmsUtil;
 import com.oldwei.isup.service.DeviceCacheService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -21,6 +22,7 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(prefix = "hik.features.channel-sync", name = "enabled", havingValue = "true")
 @RequiredArgsConstructor
 public class ScheduledTask {
     private final CmsUtil cmsUtil;

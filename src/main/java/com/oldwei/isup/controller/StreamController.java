@@ -9,6 +9,7 @@ import com.oldwei.isup.service.DeviceCacheService;
 import com.oldwei.isup.service.IMediaStreamService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URLDecoder;
@@ -21,6 +22,7 @@ import java.util.Optional;
 @Slf4j
 @RestController
 @RequestMapping("/api/devices/{deviceId}")
+@ConditionalOnProperty(prefix = "hik.features.stream", name = "enabled", havingValue = "true")
 @RequiredArgsConstructor
 public class StreamController {
 
@@ -37,7 +39,7 @@ public class StreamController {
             @RequestParam(required = false, defaultValue = "1") Integer channelId) {
         Optional<Device> deviceOpt = deviceCacheService.getByDeviceId(deviceId);
         if (deviceOpt.isEmpty()) {
-            return R.fail("设备不存在，无法预览");
+            return R.fail("Device does not exist; preview cannot start.");
         }
 
         Device device = deviceOpt.get();
@@ -111,8 +113,8 @@ public class StreamController {
 
         Optional<Device> deviceOpt = deviceCacheService.getByDeviceId(deviceId);
         if (deviceOpt.isEmpty()) {
-            log.warn("回放失败: 设备不存在, deviceId={}", deviceId);
-            return R.fail("回放失败: 设备不存在");
+            log.warn("Playback failed: device does not exist, deviceId={}", deviceId);
+            return R.fail("Playback failed: device does not exist.");
         }
 
         Device device = deviceOpt.get();

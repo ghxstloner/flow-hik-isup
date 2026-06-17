@@ -7,7 +7,7 @@ import java.io.Serial;
 import java.io.Serializable;
 
 /**
- * 响应信息主体
+ * API response body.
  *
  * @author Lion Li
  */
@@ -19,12 +19,12 @@ public class R<T> implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 成功
+     * Success.
      */
     public static final int SUCCESS = 200;
 
     /**
-     * 失败
+     * Failure.
      */
     public static final int FAIL = 500;
 
@@ -35,11 +35,11 @@ public class R<T> implements Serializable {
     private T data;
 
     public static <T> R<T> ok() {
-        return restResult(null, SUCCESS, "操作成功");
+        return restResult(null, SUCCESS, "Success");
     }
 
     public static <T> R<T> ok(T data) {
-        return restResult(data, SUCCESS, "操作成功");
+        return restResult(data, SUCCESS, "Success");
     }
 
     public static <T> R<T> ok(String msg) {
@@ -51,7 +51,7 @@ public class R<T> implements Serializable {
     }
 
     public static <T> R<T> fail() {
-        return restResult(null, FAIL, "操作失败");
+        return restResult(null, FAIL, "Failure");
     }
 
     public static <T> R<T> fail(String msg) {
@@ -59,7 +59,7 @@ public class R<T> implements Serializable {
     }
 
     public static <T> R<T> fail(T data) {
-        return restResult(data, FAIL, "操作失败");
+        return restResult(data, FAIL, "Failure");
     }
 
     public static <T> R<T> fail(String msg, T data) {
@@ -71,21 +71,21 @@ public class R<T> implements Serializable {
     }
 
     /**
-     * 返回警告消息
+     * Return a warning message.
      *
-     * @param msg 返回内容
-     * @return 警告消息
+     * @param msg response message
+     * @return warning response
      */
     public static <T> R<T> warn(String msg) {
         return restResult(null, HttpStatus.WARN, msg);
     }
 
     /**
-     * 返回警告消息
+     * Return a warning message.
      *
-     * @param msg  返回内容
-     * @param data 数据对象
-     * @return 警告消息
+     * @param msg  response message
+     * @param data response data
+     * @return warning response
      */
     public static <T> R<T> warn(String msg, T data) {
         return restResult(data, HttpStatus.WARN, msg);

@@ -4,6 +4,7 @@ import com.oldwei.isup.model.R;
 import com.oldwei.isup.sdk.isapi.ISAPIService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.*;
 @Slf4j
 @RestController
 @RequestMapping("/api/devices/{deviceId}/ptz")
+@ConditionalOnProperty(prefix = "hik.features.channel-sync", name = "enabled", havingValue = "true")
 @RequiredArgsConstructor
 public class PtzController {
 

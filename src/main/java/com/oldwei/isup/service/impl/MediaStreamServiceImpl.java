@@ -12,6 +12,7 @@ import com.oldwei.isup.sdk.structure.*;
 import com.oldwei.isup.service.IMediaStreamService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -25,6 +26,7 @@ import java.util.concurrent.CountDownLatch;
 
 @Slf4j
 @Service("mediaStreamService")
+@ConditionalOnProperty(prefix = "hik.features.stream", name = "enabled", havingValue = "true")
 @RequiredArgsConstructor
 public class MediaStreamServiceImpl implements IMediaStreamService {
 

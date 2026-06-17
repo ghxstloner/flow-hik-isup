@@ -5,6 +5,7 @@ import com.oldwei.isup.sdk.structure.NET_EHOME_VOICETALK_DATA_CB_INFO;
 import com.oldwei.isup.util.CommonMethod;
 import com.oldwei.isup.util.OsSelect;
 import com.sun.jna.Pointer;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -16,6 +17,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 @Service("voiceTalkDataCallBack")
+@ConditionalOnProperty(prefix = "hik.features.voice", name = "enabled", havingValue = "true")
 public class VoiceTalkDataCallBackImpl implements VOICETALK_DATA_CB {
     private File fileG7 = null;
 

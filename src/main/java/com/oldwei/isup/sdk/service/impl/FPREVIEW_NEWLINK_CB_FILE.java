@@ -8,6 +8,7 @@ import com.oldwei.isup.sdk.structure.NET_EHOME_PREVIEW_DATA_CB_PARAM;
 import com.sun.jna.Pointer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
@@ -18,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(prefix = "hik.features.stream", name = "enabled", havingValue = "true")
 @RequiredArgsConstructor
 public class FPREVIEW_NEWLINK_CB_FILE implements PREVIEW_NEWLINK_CB {
 

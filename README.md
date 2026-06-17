@@ -1,100 +1,122 @@
-# 海康ISUP
+# Hikvision ISUP ACS
 
-### 项目
+Spring Boot service for Hikvision ISUP ACS device registration.
 
-最大程度保留SDK原始代码，SDK代码统一放到`com.oldwei.isup.sdk`包中。在SDK功能基础之上封装其接口以供外部调用。
+The current scope is intentionally small:
 
-### 端口放行
+- start the Spring Boot application
+- initialize the ISUP CMS SDK
+- listen for device registration callbacks
+- handle ISUP authentication, session key, DAS request, online, and offline callbacks
+- keep online devices in an in-memory registry
+- expose `GET /api/devices`
+- support Linux SDK loading and Docker packaging
 
-重要的是要放行7660/tcp和7660/udp
+The following features are disabled by default and should stay off until they are needed again:
 
-### 打包Docker
+- video preview and streaming
+- playback
+- voice talk
+- ZLM media server
+- picture storage server
+- TTS
+- camera, NVR, and DVR channel sync
+- scheduled channel polling
+
+## Configuration
+
+Use the `dev` profile and configure the service through environment variables.
+
+Required for a normal ACS registration setup:
 
 ```shell
-# 删除镜像
-docker rmi oldweipro/hik-isup:latest
+export HIK_PUBLIC_IP=your-server-ip-or-dns
+export HIK_CMS_LISTEN_IP=0.0.0.0
+export HIK_CMS_LISTEN_PORT=7660
+export HIK_DAS_IP="$HIK_PUBLIC_IP"
+export HIK_DAS_PORT=7660
+export HIK_ISUP_KEY=hik12345
+```
 
-# 构建镜像
-docker build -t oldweipro/hik-isup:latest .
+Feature flags:
 
-# 导出镜像
-docker save -o hik-isup.tar oldweipro/hik-isup:latest
+```yaml
+hik:
+  features:
+    cms:
+      enabled: true
+    alarm:
+      enabled: false
+    stream:
+      enabled: false
+    storage:
+      enabled: false
+    voice:
+      enabled: false
+    playback:
+      enabled: false
+    channel-sync:
+      enabled: false
+```
 
-# 停止容器
-docker stop hik-isup
+The corresponding environment variables are:
 
-# 删除容器
-docker rm hik-isup
+```shell
+HIK_CMS_ENABLED=true
+HIK_ALARM_ENABLED=false
+HIK_STREAM_ENABLED=false
+HIK_STORAGE_ENABLED=false
+HIK_VOICE_ENABLED=false
+HIK_PLAYBACK_ENABLED=false
+HIK_CHANNEL_SYNC_ENABLED=false
+```
 
-# 删除镜像
-docker rmi oldweipro/hik-isup:latest
+## Ports
 
-# 加载镜像
-docker load -i hik-isup.tar
+For the registration-only flow, allow:
 
-# 构建容器
-docker run -p 16233:16233 -p 7660:7660 -p 7665:7665 -p 7500:7500 -d --network=host --restart=always --name hik-isup oldweipro/hik-isup:latest
+- `7660/tcp`
+- `7660/udp` if your device requires UDP on the same ACS port
+- `16233/tcp` for the HTTP API
 
-# 容器日志
+## API
+
+List currently registered devices:
+
+```shell
+curl http://localhost:16233/api/devices
+```
+
+Filter by device ID or online state:
+
+```shell
+curl "http://localhost:16233/api/devices?deviceId=DEVICE_ID&isOnline=1"
+```
+
+## Docker
+
+Build the image:
+
+```shell
+docker build -t hik-isup:latest .
+```
+
+Run with host networking so the native SDK can bind the configured listener ports:
+
+```shell
+docker run -d \
+  --network=host \
+  --restart=always \
+  --name hik-isup \
+  -e HIK_PUBLIC_IP=your-server-ip-or-dns \
+  -e HIK_CMS_LISTEN_IP=0.0.0.0 \
+  -e HIK_DAS_IP=your-server-ip-or-dns \
+  -e HIK_ISUP_KEY=hik12345 \
+  hik-isup:latest
+```
+
+View logs:
+
+```shell
 docker logs -f --tail=300 hik-isup
 ```
-
-### CentOS
-
-CentOS 防火墙通常指的是 firewalld 服务，它是 CentOS 7 及更高版本的默认防火墙管理工具。以下是一些常用的 firewalld 命令：
-
-启动防火墙：
-
-```shell
-sudo systemctl start firewalld
-```
-
-停止防火墙：
-
-```shell
-sudo systemctl stop firewalld
-```
-
-查看防火墙状态：
-
-```shell
-sudo systemctl status firewalld
-```
-
-设置防火墙开机自启：
-
-```shell
-sudo systemctl enable firewalld
-```
-
-禁用防火墙开机自启：
-
-```shell
-sudo systemctl disable firewalld
-```
-
-添加规则允许特定端口（例如，允许 TCP 80 端口）：
-
-```shell
-sudo firewall-cmd --zone=public --add-port=80/tcp --permanent
-```
-
-删除规则关闭特定端口（例如，关闭 TCP 8080 端口）：
-
-```shell
-sudo firewall-cmd --zone=public --remove-port=8080/tcp --permanent
-```
-
-重新载入防火墙以应用更改：
-
-```shell
-sudo firewall-cmd --reload
-```
-
-查看所有当前规则：
-
-```shell
-sudo firewall-cmd --list-all
-```
-
-请根据实际需要使用适当的命令。注意，--permanent 标志用于使更改永久生效，不加 --permanent 标志则只对当前会话生效。

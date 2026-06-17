@@ -8,9 +8,13 @@ import com.oldwei.isup.sdk.structure.NET_EHOME_VOICETALK_DATA_CB_PARAM;
 import com.oldwei.isup.sdk.structure.NET_EHOME_VOICETALK_NEWLINK_CB_INFO;
 import com.sun.jna.Pointer;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 @Service("voiceCallBack")
+@ConditionalOnProperty(prefix = "hik.features.voice", name = "enabled", havingValue = "true")
+@ConditionalOnBean(IHikISUPStream.class)
 @RequiredArgsConstructor
 public class VoiceCallBackImpl implements VOICETALK_NEWLINK_CB {
     private final VOICETALK_DATA_CB voiceTalkDataCallBack;
