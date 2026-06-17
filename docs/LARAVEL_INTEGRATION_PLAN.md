@@ -201,10 +201,11 @@ Current behavior is intentionally conservative:
 - `hik.features.provisioning.enabled=false` by default.
 - `hik.features.raw-isapi.enabled=false` by default.
 - When enabled, user sync sends a no-photo Hikvision `UserInfo` payload through ISUP to `PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json`.
-- User sync returns `bridgeStatus = "synced"` with `userSynced = true` when the SDK call and returned ISAPI body look successful.
-- User sync returns `bridgeStatus = "failed"` with `userSynced = false`, `rawResponse`, and `sdkError` when the SDK call fails or the returned ISAPI body looks like an error.
+- User sync returns `bridgeStatus = "synced"` with `userSynced = true` when the SDK transport succeeds and the top-level Hikvision response has `statusCode = 1` and `subStatusCode = "ok"`.
+- User sync returns `bridgeStatus = "failed"` with `userSynced = false`, `rawResponse`, and `sdkError` when the SDK call fails, `sdkError` is present, `rawResponse` is empty, `statusCode` is not `1`, or `subStatusCode` is not `ok`.
 - Photo/face upload is still not implemented; `photoSynced = false`.
 - User delete still returns `501` with `bridgeStatus = "not_implemented"`.
+- User verification is available at `GET /api/devices/{deviceId}/users/{employeeNo}/verify` and requires both provisioning and raw ISAPI feature flags. A successful search that does not include the requested employee returns `bridgeStatus = "not_found"` instead of a server error.
 - Raw ISAPI passthrough is implemented only for safe diagnostics:
   - `GET /ISAPI/System/deviceInfo`
   - `GET /ISAPI/AccessControl/UserInfo/capabilities`

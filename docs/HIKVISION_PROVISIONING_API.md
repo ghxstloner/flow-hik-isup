@@ -123,6 +123,7 @@ Current behavior:
 - Sends user data through ISUP passthrough to `PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json`.
 - Does not implement face/photo upload yet; `photoSynced` is always `false`.
 - Does not log `photo.contentBase64`.
+- Treats the provisioning call as successful only when the SDK transport succeeds, `rawResponse.statusCode == 1`, and `rawResponse.subStatusCode == "ok"`.
 
 Conservative default `UserInfo` values:
 
@@ -172,9 +173,19 @@ Successful user response:
     "photoSynced": false,
     "deleted": false,
     "bridgeStatus": "synced",
-    "rawResponse": "{\"UserInfoSetUp\":{\"statusCode\":1,\"statusString\":\"OK\"}}",
+    "rawResponse": "{\"statusCode\":1,\"statusString\":\"OK\",\"subStatusCode\":\"ok\"}",
     "sdkError": null
   }
+}
+```
+
+The device may return a compact top-level response like this, which is considered success:
+
+```json
+{
+  "statusCode": 1,
+  "statusString": "OK",
+  "subStatusCode": "ok"
 }
 ```
 
@@ -197,6 +208,50 @@ Failed user response:
   }
 }
 ```
+
+### Verify One User
+
+```http
+GET /api/devices/{deviceId}/users/{employeeNo}/verify
+```
+
+Purpose:
+
+- Read-only check for one user after provisioning.
+- Uses the device's UserInfo search endpoint through ISUP passthrough.
+- Does not change the raw `/isapi` diagnostic allowlist.
+
+Feature and auth requirements:
+
+- Requires `X-Flow-Bridge-Token`.
+- Requires `hik.features.provisioning.enabled=true`.
+- Requires `hik.features.raw-isapi.enabled=true`.
+
+Verify employee `1001`:
+
+```shell
+curl -sS 'http://localhost:16233/api/devices/1/users/1001/verify' \
+  -H "X-Flow-Bridge-Token: ${FLOW_BRIDGE_TOKEN}"
+```
+
+Successful verification response:
+
+```json
+{
+  "code": 200,
+  "msg": "Success",
+  "data": {
+    "deviceId": "1",
+    "employeeNo": "1001",
+    "found": true,
+    "bridgeStatus": "synced",
+    "rawResponse": "{\"UserInfoSearch\":{\"numOfMatches\":1,\"UserInfo\":[{\"employeeNo\":\"1001\"}]}}",
+    "sdkError": null
+  }
+}
+```
+
+If the SDK search call succeeds but the requested `employeeNo` is not present in the response, the endpoint returns HTTP `200` with `found = false` and `bridgeStatus = "not_found"`. SDK failures, SDK errors, or empty device responses still return failed responses.
 
 Success response:
 
@@ -321,6 +376,7 @@ Phase-1 behavior:
   - `GET /ISAPI/System/deviceInfo`
   - `GET /ISAPI/AccessControl/UserInfo/capabilities`
 - Rejects `PUT`, `POST`, `DELETE`, user creation, face upload, and all other paths. User setup is available only through `PUT /api/devices/{deviceId}/users/{employeeNo}`.
+- User verification is available only through `GET /api/devices/{deviceId}/users/{employeeNo}/verify`.
 
 Successful response shape:
 

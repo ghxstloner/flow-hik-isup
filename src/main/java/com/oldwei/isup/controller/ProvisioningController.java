@@ -10,6 +10,7 @@ import com.oldwei.isup.model.provisioning.RawIsapiRequest;
 import com.oldwei.isup.model.provisioning.RawIsapiResponse;
 import com.oldwei.isup.model.provisioning.UserDeleteRequest;
 import com.oldwei.isup.model.provisioning.UserSyncRequest;
+import com.oldwei.isup.model.provisioning.UserVerificationResponse;
 import com.oldwei.isup.service.BridgeAuthService;
 import com.oldwei.isup.service.DeviceCacheService;
 import com.oldwei.isup.service.HikvisionProvisioningService;
@@ -19,6 +20,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -106,6 +108,36 @@ public class ProvisioningController {
         return ResponseEntity.ok(R.ok(result));
     }
 
+    @GetMapping("/users/{employeeNo}/verify")
+    public ResponseEntity<R<UserVerificationResponse>> verifyUser(
+            @PathVariable String deviceId,
+            @PathVariable String employeeNo,
+            @RequestHeader(value = TOKEN_HEADER, required = false) String token) {
+
+        if (!bridgeAuthService.isAuthorized(token)) {
+            UserVerificationResponse body = userVerificationResponse(deviceId, employeeNo, ProvisioningStatus.UNAUTHORIZED, false, "", null);
+            return response(HttpStatus.UNAUTHORIZED, "Unauthorized.", body);
+        }
+
+        if (!hikFeatureProperties.getProvisioning().isEnabled() || !hikFeatureProperties.getRawIsapi().isEnabled()) {
+            UserVerificationResponse body = userVerificationResponse(deviceId, employeeNo, ProvisioningStatus.FEATURE_DISABLED, false, "", null);
+            return response(HttpStatus.SERVICE_UNAVAILABLE, "User verification endpoint is disabled.", body);
+        }
+
+        Optional<Device> deviceOpt = onlineDevice(deviceId);
+        if (deviceOpt.isEmpty()) {
+            UserVerificationResponse body = userVerificationResponse(deviceId, employeeNo, ProvisioningStatus.OFFLINE, false, "", "offline");
+            return response(HttpStatus.CONFLICT, "Device is not online.", body);
+        }
+
+        UserVerificationResponse result = provisioningService.verifyUser(deviceOpt.get(), employeeNo);
+        if (ProvisioningStatus.FAILED.equals(result.getBridgeStatus())) {
+            return response(HttpStatus.ERROR, "User verification failed.", result);
+        }
+
+        return ResponseEntity.ok(R.ok(result));
+    }
+
     @PostMapping("/isapi")
     public ResponseEntity<R<RawIsapiResponse>> rawIsapi(
             @PathVariable String deviceId,
@@ -176,6 +208,16 @@ public class ProvisioningController {
 
     private ProvisioningResponse baseResponse(String deviceId, String employeeNo, String bridgeStatus) {
         return new ProvisioningResponse(null, deviceId, employeeNo, false, false, false, bridgeStatus, "", null);
+    }
+
+    private UserVerificationResponse userVerificationResponse(
+            String deviceId,
+            String employeeNo,
+            String bridgeStatus,
+            boolean found,
+            String rawResponse,
+            String sdkError) {
+        return new UserVerificationResponse(deviceId, employeeNo, found, bridgeStatus, rawResponse, sdkError);
     }
 
     private <T> ResponseEntity<R<T>> response(int status, String message, T body) {
