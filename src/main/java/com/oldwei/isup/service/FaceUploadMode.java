@@ -66,6 +66,30 @@ public enum FaceUploadMode {
             "POST",
             "/ISAPI/Intelligent/FDLib/FaceDataRecord",
             null
+    ),
+
+    /**
+     * Lowercase-URL spelling escape hatch. Identical transport to
+     * {@link #FACE_URL}; the only difference is the JSON key
+     * ({@code faceUrl} vs {@code faceURL}). Useful if a firmware honors the
+     * Hikvision doc spelling rather than the capability-advertised one.
+     */
+    FACE_URL_LOWER(
+            "POST",
+            "/ISAPI/Intelligent/FDLib/FaceDataRecord",
+            null
+    ),
+
+    /**
+     * Wrapped, capital-URL spelling escape hatch. Same path as {@link #FACE_URL}
+     * but emits the descriptor nested under {@code FaceDataRecord}. Kept as a
+     * selectable fallback because some firmwares require the wrapper even for
+     * URL-based enrollment.
+     */
+    FACE_URL_WRAPPED(
+            "POST",
+            "/ISAPI/Intelligent/FDLib/FaceDataRecord",
+            null
     );
 
     private final String method;
@@ -91,32 +115,48 @@ public enum FaceUploadMode {
     }
 
     /**
-     * Builds the JSON string for this mode.
+     * Resolves a raw config string into a {@link FaceUploadMode}. Any unknown
+     * or blank value falls back to the {@link #FACE_DATA_RECORD_FACEIMAGE
+     * default} so a malformed env var never breaks face uploads.
+     */
+    public static FaceUploadMode fromConfig(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return FACE_DATA_RECORD_FACEIMAGE;
+        }
+        return switch (raw.trim().toLowerCase()) {
+            case "face-data-record-faceimage" -> FACE_DATA_RECORD_FACEIMAGE;
+            case "face-data-record-img" -> FACE_DATA_RECORD_IMG;
+            case "fd-setup-img" -> FD_SETUP_IMG;
+            case "face-url", "face-url-flat-faceurl-upper" -> FACE_URL;
+            case "face-url-flat-faceurl-lower" -> FACE_URL_LOWER;
+            case "face-url-wrapped-faceURL".toLowerCase(), "face-url-wrapped-faceurl-upper" -> FACE_URL_WRAPPED;
+            default -> FACE_DATA_RECORD_FACEIMAGE;
+        };
+    }
+
+    /**
+     * Builds the multipart {@code FaceDataRecord} part JSON for the binary
+     * upload modes. URL-based modes should call
+     * {@link #faceRecordJsonUrl(String, String, FaceUrlShape, String, String)}
+     * instead - this method throws if invoked on a {@link #isFaceUrlMode()
+     * URL mode} to prevent silent fallback to the wrong payload shape.
      *
      * <p>Why this shape: the direct-IP Laravel implementation (the only one
      * proven to work on this device family through Guzzle multipart) emits the
      * WRAPPED key {@code {"FaceDataRecord":{...}}} - claims that the Hikvision
      * multipart parser strips the part name and re-attaches this outer key.
      * Earlier bare-object attempts produced {@code badJsonFormat} on the
-     * DS-K1T321MFWX, so the wrapper is restored here to mirror Laravel exactly
-     * and isolate the remaining variable to the binary-transfer path.
-     *
-     * <p>The {@code FACE_URL} mode emits a flat JSON body with a
-     * {@code faceUrl} field that the device fetches over HTTP - the binary
-     * multipart path is skipped entirely.
+     * DS-K1T321MFWX, so the wrapper is restored here to mirror Laravel
+     * exactly and isolate the remaining variable to the binary-transfer path.
      */
     public String faceRecordJson(String employeeNo, String faceUrl) {
+        if (isFaceUrlMode()) {
+            throw new UnsupportedOperationException(
+                    "faceRecordJson is for binary multipart modes only; use faceRecordJsonUrl for " + name());
+        }
         Map<String, Object> body = new LinkedHashMap<>();
         Map<String, Object> record = new LinkedHashMap<>();
         switch (this) {
-            case FACE_URL -> {
-                record.put("faceLibType", "blackFD");
-                record.put("FDID", "1");
-                record.put("FPID", employeeNo);
-                record.put("faceUrl", faceUrl);
-                body.put("FaceDataRecord", record);
-                return com.alibaba.fastjson2.JSON.toJSONString(body);
-            }
             case FD_SETUP_IMG -> {
                 record.put("employeeNo", employeeNo);
                 record.put("faceLibType", "blackFD");
@@ -139,20 +179,53 @@ public enum FaceUploadMode {
     }
 
     /**
-     * Resolves a raw config string into a {@link FaceUploadMode}. Any unknown
-     * or blank value falls back to the {@link #FACE_DATA_RECORD_FACEIMAGE
-     * default} so a malformed env var never breaks face uploads.
+     * Returns {@code true} when this mode is one of the URL-based enrollment
+     * variants ({@link #FACE_URL}, {@link #FACE_URL_LOWER},
+     * {@link #FACE_URL_WRAPPED}). Used by the service to dispatch to the
+     * JSON-only path instead of binary multipart.
      */
-    public static FaceUploadMode fromConfig(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return FACE_DATA_RECORD_FACEIMAGE;
-        }
-        return switch (raw.trim().toLowerCase()) {
-            case "face-data-record-faceimage" -> FACE_DATA_RECORD_FACEIMAGE;
-            case "face-data-record-img" -> FACE_DATA_RECORD_IMG;
-            case "fd-setup-img" -> FD_SETUP_IMG;
-            case "face-url" -> FACE_URL;
-            default -> FACE_DATA_RECORD_FACEIMAGE;
+    public boolean isFaceUrlMode() {
+        return switch (this) {
+            case FACE_URL, FACE_URL_LOWER, FACE_URL_WRAPPED -> true;
+            default -> false;
         };
+    }
+
+    /**
+     * Returns the {@link FaceUrlShape} to use for URL payload assembly at
+     * transport time. Kept on the enum (not derived from surfaced config) so
+     * the mode and shape stay consistent - users typically only flip
+     * face-upload-mode and let this mapping pick the right shape.
+     */
+    public FaceUrlShape defaultShape() {
+        return switch (this) {
+            case FACE_URL -> FaceUrlShape.FLAT_FACEURL_UPPER;
+            case FACE_URL_LOWER -> FaceUrlShape.FLAT_FACEURL_LOWER;
+            case FACE_URL_WRAPPED -> FaceUrlShape.WRAPPED_FACEURL_UPPER;
+            default -> FaceUrlShape.FLAT_FACEURL_UPPER;
+        };
+    }
+
+    /**
+     * Builds the FACE_URL JSON payload using the configured shape,
+     * {@code faceLibType}, {@code FDID}, and {@code employeeNo} (-> FPID),
+     * with the supplied {@code faceUrl} substituted under the shape's URL key.
+     * Only meaningful for the {@link #isFaceUrlMode() URL-based modes}. An
+     * explicit {@code shapeOverride} wins over {@link #defaultShape()} so the
+     * operator can mix any shape with any face-url mode via env.
+     */
+    public String faceRecordJsonUrl(
+            String employeeNo,
+            String faceUrl,
+            FaceUrlShape shapeOverride,
+            String faceLibType,
+            String fdid) {
+        FaceUrlShape shape = shapeOverride != null ? shapeOverride : defaultShape();
+        Object payload = shape.buildPayload(
+                faceLibType == null || faceLibType.isBlank() ? "blackFD" : faceLibType,
+                fdid == null || fdid.isBlank() ? "1" : fdid,
+                employeeNo,
+                faceUrl);
+        return com.alibaba.fastjson2.JSON.toJSONString(payload);
     }
 }

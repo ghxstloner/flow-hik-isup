@@ -31,14 +31,33 @@ public class HikProvisioningProperties {
      *   <li>{@code fd-setup-img}:<br>
      *       {@code PUT /ISAPI/Intelligent/FDLib/FDSetUp?format=json}
      *       with parts {@code FaceDataRecord} + {@code img}.</li>
-     *   <li>{@code face-url}:<br>
-     *       JSON-only {@code POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json}
-     *       carrying a {@code faceUrl} field. The bridge publishes the JPEG
-     *       at a temporary unguessable internal URL (see
-     *       {@link com.oldwei.isup.service.FaceUrlStore}) that the device
-     *       fetches over HTTP. Escape hatch for firmware that rejects binary
-     *       multipart with {@code badJsonFormat}.</li>
      * </ul>
+     * <p>For URL-based enrollment use one of the {@code face-url*} modes
+     * documented in {@link com.oldwei.isup.service.FaceUrlShape}.
      */
     private String faceUploadMode = "face-data-record-faceimage";
+
+    /**
+     * Selects the FACE_URL payload shape. Only meaningful when
+     * {@link #faceUploadMode} resolves to one of the {@code face-url*} modes.
+     * Env: {@code FLOW_HIK_FACE_URL_SHAPE}. See
+     * {@link com.oldwei.isup.service.FaceUrlShape} for the exact JSON each
+     * value produces.
+     */
+    private String faceUrlShape = "flat-faceurl-upper";
+
+    /**
+     * Top-level {@code faceLibType} value sent in FACE_URL payloads. Sourced
+     * from the device capability discovery ({@code GET /ISAPI/Intelligent/FDLib}).
+     * Env: {@code FLOW_HIK_FACE_LIB_TYPE}.
+     */
+    private String faceLibType = "blackFD";
+
+    /**
+     * FDLib id ({@code FDID}) to enroll into. Defaults to {@code 1}, matching
+     * the {@code blackFD} library reported by the DS-K1T321MFWX. Env:
+     * {@code FLOW_HIK_FACE_FDID}.
+     */
+    private String fdid = "1";
 }
+

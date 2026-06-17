@@ -16,10 +16,23 @@ hik:
     #   face-data-record-faceimage -> POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json, image part name "FaceImage", multipart JSON = {"FaceDataRecord":{"employeeNo":..,"faceLibType":"blackFace"}} (mirrors Laravel)
     #   face-data-record-img       -> same path, image part name "img"
     #   fd-setup-img               -> PUT  /ISAPI/Intelligent/FDLib/FDSetUp?format=json, image part name "img", JSON adds employeeNo
-    #   face-url                   -> POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json, JSON-only body with faceUrl; bridge serves the JPEG at a temporary unguessable internal URL (no binary multipart)
+    #   face-url                   -> POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json, JSON-only FLAT body with faceURL (capital) at top level: {"faceLibType":"blackFD","FDID":"1","FPID":"<e>","faceURL":"http://.."} - this is the per-device-capability discovery default (DS-K1T321MFWX: faceURLLen=1024)
+    #   face-url-flat-faceurl-lower-> same as face-url but the URL key is lowercase "faceUrl"
+    #   face-url-wrapped-faceURL   -> same as face-url but the descriptor is nested under "FaceDataRecord"
     # Defaults to the most widely supported multipart variant. If the device
     # rejects multipart with statusCode=5 badJsonFormat, switch to face-url.
     face-upload-mode: ${FLOW_HIK_FACE_UPLOAD_MODE:face-data-record-faceimage}
+    # FACE_URL payload shape, only used when face-upload-mode is one of the
+    # face-url* modes. One of:
+    #   flat-faceurl-upper    -> {"faceLibType":"blackFD","FDID":"1","FPID":"<e>","faceURL":".."}   (default, matches capabilities)
+    #   flat-faceurl-lower    -> same but key "faceUrl"
+    #   wrapped-faceurl-upper -> {"FaceDataRecord":{"faceLibType":"blackFD","FDID":"1","FPID":"<e>","faceURL":".."}}
+    #   wrapped-faceurl-lower -> same but key "faceUrl"
+    face-url-shape: ${FLOW_HIK_FACE_URL_SHAPE:flat-faceurl-upper}
+    # Top-level faceLibType value - discovered via GET /ISAPI/Intelligent/FDLib.
+    face-lib-type: ${FLOW_HIK_FACE_LIB_TYPE:blackFD}
+    # FDLib id to enroll into - FDID "1" ships with the typical blackFD library.
+    fdid: ${FLOW_HIK_FACE_FDID:1}
 
   face-url:
     # Optional explicit base URL for the temporary face-image endpoint. When

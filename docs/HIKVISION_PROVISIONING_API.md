@@ -333,14 +333,31 @@ Bridge face upload internals (phase-1 fix):
        TTL, served by `TinyFaceTokenController` at the configured
        `hik.face-url.path-prefix`). The public host:port is derived from
        `hik.stream.http` (or explicitly via `hik.face-url.base-url`).
-    2. It sends a JSON-only `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json`
-       with body:
+    2. It sends a JSON-only `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json`.
+       The default payload shape is **flat top-level** with the **capital-URL**
+       key, because real-device capability discovery on the DS-K1T321MFWX
+       advertises `faceURLLen=1024` and returns `errorMsg: faceLibType` when
+       `faceLibType` is hidden under a `FaceDataRecord` wrapper:
        ```json
-       {"FaceDataRecord":{"faceLibType":"blackFD","FDID":"1","FPID":"<employeeNo>","faceUrl":"http://<bridge>/internal/face/<token>"}}
+       {"faceLibType":"blackFD","FDID":"1","FPID":"<employeeNo>","faceURL":"http://<bridge>/internal/face/<token>"}
        ```
-    3. The device fetches the JPEG from `faceUrl` over HTTP, then the bridge
-       revoke the temp URL on completion (success or failure).
-  The device URL must be reachable from the device's network to the bridge.
+       Two fallback shapes are selectable via
+       `hik.provisioning.face-url-shape` (env `FLOW_HIK_FACE_URL_SHAPE`),
+       and the corresponding `face-upload-mode` aliases select the same shape
+       automatically:
+         - `flat-faceurl-upper` (default, mode `face-url`): flat + `faceURL`
+         - `flat-faceurl-lower` (mode `face-url-flat-faceurl-lower`): flat + `faceUrl`
+         - `wrapped-faceurl-upper` (mode `face-url-wrapped-faceURL`):
+           `{"FaceDataRecord":{...,"faceURL":..}}`
+         - `wrapped-faceurl-lower`: wrapped + `faceUrl`
+       `faceLibType` and `FDID` are independently configurable via
+       `hik.provisioning.face-lib-type` (env `FLOW_HIK_FACE_LIB_TYPE`,
+       default `blackFD`) and `hik.provisioning.fdid` (env
+       `FLOW_HIK_FACE_FDID`, default `1`) — these should match the values
+       returned by `GET /ISAPI/Intelligent/FDLib`.
+    3. The device fetches the JPEG from the URL over HTTP, then the bridge
+       revokes the temp URL on completion (success or failure).
+  The bridge URL must be reachable from the device's network.
 - Different Hikvision device families expose face enrolment under different
   paths and image field names. The bridge exposes a single tunable:
   `hik.provisioning.face-upload-mode` (env `FLOW_HIK_FACE_UPLOAD_MODE`):
@@ -350,9 +367,14 @@ Bridge face upload internals (phase-1 fix):
       `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json`, image field `img`.
     - `fd-setup-img`:
       `PUT /ISAPI/Intelligent/FDLib/FDSetUp?format=json`, image field `img`.
+    - `face-url` (= `face-url-flat-faceurl-upper`): JSON-only, flat + capital `faceURL`.
+    - `face-url-flat-faceurl-lower`: JSON-only, flat + lowercase `faceUrl`.
+    - `face-url-wrapped-faceURL`: JSON-only, wrapped + capital `faceURL`.
   If the device returns `badJsonFormat`, leave the `FaceDataRecord` JSON bare
   and switch to `face-data-record-img`; if that still fails, try `fd-setup-img`
-  (which also changes the verb to `PUT`).
+  (which also changes the verb to `PUT`). If the device returns
+  `statusCode=6 / subStatusCode=MessageParametersLack / errorMsg=faceLibType`,
+  switch to `face-url` (flat capital-URL payload).
 - Photos are normalized through `FaceImageNormalizer` before upload, mirroring
   the proven Laravel `HikvisionPhotoProcessor` configuration:
     - resize to at most `300 x 300` keeping aspect ratio;

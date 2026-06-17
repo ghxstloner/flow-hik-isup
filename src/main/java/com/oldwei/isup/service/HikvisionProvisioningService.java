@@ -254,7 +254,7 @@ public class HikvisionProvisioningService {
 
         FaceUploadMode mode = FaceUploadMode.fromConfig(provisioningProperties.getFaceUploadMode());
 
-        if (mode == FaceUploadMode.FACE_URL) {
+        if (mode.isFaceUrlMode()) {
             return uploadFaceByUrl(device, employeeNo, face, mode);
         }
         return uploadFaceByMultipart(device, employeeNo, face, mode);
@@ -271,15 +271,31 @@ public class HikvisionProvisioningService {
     private FaceUploadResult uploadFaceByUrl(Device device, String employeeNo,
                                              FaceImageNormalizer.NormalizedFace face, FaceUploadMode mode) {
         String faceUrl = faceUrlStore.publish(employeeNo, face.bytes());
-        String payload = mode.faceRecordJson(employeeNo, faceUrl);
+        // Resolve shape + faceLibType + FDID from config so an operator can
+        // chase firmware idiosyncrasies (e.g. faceURL vs faceUrl, wrapped vs
+        // flat, blackFD vs blackFace) without a rebuild. shapeOverride comes
+        // from FLOW_HIK_FACE_URL_SHAPE and may null-out if unset; the mode
+        // supplies a sensible default in that case.
+        FaceUrlShape shapeOverride = FaceUrlShape.fromConfig(provisioningProperties.getFaceUrlShape());
+        String faceLibType = provisioningProperties.getFaceLibType();
+        String fdid = provisioningProperties.getFdid();
+        String payload = mode.faceRecordJsonUrl(employeeNo, faceUrl, shapeOverride, faceLibType, fdid);
         byte[] payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
         String url = mode.method() + " " + mode.isapiPath() + "?format=json";
 
-        log.info("Face upload (URL mode) prepared: deviceId={}, employeeNo={}, mode={}, faceUrl={}, payloadHasFaceUrl=true, payloadBytes={}, isapiUrl={}",
+        // Sanitized log: NEVER print faceUrl value or bytes, only structural
+        // info to confirm the right shape is on the wire.
+        log.info("Face upload (URL mode) prepared: deviceId={}, employeeNo={}, mode={}, shape={}, faceLibType={}, FDID={}, FPID={}, urlKey={}, payloadHasFaceURL={}, payloadHasFaceUrl={}, payloadBytes={}, isapiUrl={}",
                 device.getDeviceId(),
                 employeeNo,
                 mode.name(),
-                faceUrl,
+                shapeOverride.name(),
+                faceLibType,
+                fdid,
+                employeeNo,
+                shapeOverride.urlKey(),
+                payload.contains("\"faceURL\""),
+                payload.contains("\"faceUrl\""),
                 payloadBytes.length,
                 url);
 
