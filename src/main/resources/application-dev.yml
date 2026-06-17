@@ -11,6 +11,15 @@ hik:
     # Internal API token required by X-Flow-Bridge-Token.
     token: ${FLOW_BRIDGE_TOKEN:}
 
+  provisioning:
+    # Face upload protocol variant. One of:
+    #   face-data-record-faceimage -> POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json, image part name "FaceImage"
+    #   face-data-record-img       -> POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json, image part name "img"
+    #   fd-setup-img               -> PUT  /ISAPI/Intelligent/FDLib/FDSetUp?format=json,         image part name "img"
+    # Defaults to the most widely supported variant. Flip here or via
+    # FLOW_HIK_FACE_UPLOAD_MODE while debugging per-firmware differences.
+    face-upload-mode: ${FLOW_HIK_FACE_UPLOAD_MODE:face-data-record-faceimage}
+
   features:
     cms:
       enabled: ${FLOW_HIK_CMS_ENABLED:true}

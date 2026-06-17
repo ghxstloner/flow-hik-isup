@@ -3,6 +3,7 @@ package com.oldwei.isup.service;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.oldwei.isup.config.HikProvisioningProperties;
 import com.oldwei.isup.model.Device;
 import com.oldwei.isup.model.provisioning.FaceSyncRequest;
 import com.oldwei.isup.model.provisioning.ProvisioningAccess;
@@ -34,20 +35,21 @@ public class HikvisionProvisioningService {
 
     private static final String SET_UP_USER_URL = "PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json";
     private static final String SEARCH_USER_URL = "POST /ISAPI/AccessControl/UserInfo/Search?format=json";
-    /**
-     * Face upload path. The literal {@code format=json} and the
-     * {@code __BOUNDARY__} token are appended per upload so the device can
-     * locate the multipart boundary without an HTTP {@code Content-Type}
-     * header (the ISUP pass-through struct does not expose headers).
-     */
-    private static final String FACE_DATA_RECORD_URL_TEMPLATE = "POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
     private static final String JPEG_CONTENT_TYPE = "image/jpeg";
     private static final String DEFAULT_BEGIN_TIME = "2020-01-01T00:00:00";
     private static final String DEFAULT_END_TIME = "2037-12-31T23:59:59";
     private static final int FACE_PASSTHROUGH_TIMEOUT_MS = 10000;
+    /**
+     * Cap on how many ASCII characters of the multipart preamble we log so we
+     * can confirm part ordering / field names without ever dumping the JPEG
+     * bytes. Stops at the first {@code \r\n\r\n} sequence that starts the
+     * binary {@code FaceImage} part.
+     */
+    private static final int MULTIPART_PREAMBLE_LOG_LIMIT = 512;
 
     private final CmsUtil cmsUtil;
     private final FaceImageNormalizer faceImageNormalizer;
+    private final HikProvisioningProperties provisioningProperties;
 
     public ProvisioningResponse syncUser(Device device, String employeeNo, UserSyncRequest request) {
         log.info("Hikvision user sync requested: deviceId={}, employeeNo={}, correlationId={}",
@@ -249,17 +251,20 @@ public class HikvisionProvisioningService {
             );
         }
 
+        FaceUploadMode mode = FaceUploadMode.fromConfig(provisioningProperties.getFaceUploadMode());
+
         // Boundary MUST be ASCII-only and MUST be passed both inside the body
         // AND as a URL query parameter, because NET_EHOME_PTXML_PARAM has no
         // header field - the device can only learn the multipart boundary from
         // the URL.
         String boundary = "----flowhikface" + UUID.randomUUID().toString().replace("-", "");
-        byte[] multipartBody = buildFaceMultipartBody(employeeNo, face.bytes(), boundary);
-        String url = buildFaceUrl(boundary);
+        byte[] multipartBody = buildFaceMultipartBody(employeeNo, face.bytes(), boundary, mode);
+        String url = buildFaceUrl(boundary, mode);
 
-        log.info("Face upload prepared: deviceId={}, employeeNo={}, originalBytes={}, originalProgressive={}, normalizedBytes={}, normalizedProgressive={}, srcSize={}, normalizedSize={}, multipartBytes={}, contentType=multipart/form-data, boundary={}, targetUrl={}",
+        log.info("Face upload prepared: deviceId={}, employeeNo={}, mode={}, originalBytes={}, originalProgressive={}, normalizedBytes={}, normalizedProgressive={}, srcSize={}, normalizedSize={}, multipartBytes={}, contentType=multipart/form-data, boundary={}, isapiUrl={}, imageFieldName={}, faceDataRecordPart={}",
                 device.getDeviceId(),
                 employeeNo,
+                mode.name(),
                 face.originalBytes(),
                 face.originalProgressive(),
                 face.normalizedBytes(),
@@ -268,7 +273,9 @@ public class HikvisionProvisioningService {
                 face.outWidth() + "x" + face.outHeight(),
                 multipartBody.length,
                 boundary,
-                FACE_DATA_RECORD_URL_TEMPLATE);
+                url,
+                mode.imageFieldName(),
+                describeMultipartPreamble(multipartBody));
 
         CmsUtil.IsapiPassThroughResult result = cmsUtil.passThroughBytesWithStatus(
                 device.getLoginId(),
@@ -281,9 +288,11 @@ public class HikvisionProvisioningService {
                 && StringUtils.isBlank(result.getSdkError())
                 && isSuccessfulIsapiResponse(result.getRawResponse());
 
-        log.info("Face upload result: deviceId={}, employeeNo={}, success={}, transportOk={}, sdkError={}, rawResponseLength={}",
+        log.info("Face upload result: deviceId={}, employeeNo={}, mode={}, url={}, success={}, transportOk={}, sdkError={}, rawResponseLength={}",
                 device.getDeviceId(),
                 employeeNo,
+                mode.name(),
+                url,
                 success,
                 result.isSuccess(),
                 result.getSdkError(),
@@ -296,28 +305,42 @@ public class HikvisionProvisioningService {
         return Base64.getDecoder().decode(photo.getContentBase64());
     }
 
-    private String buildFaceUrl(String boundary) {
-        return FACE_DATA_RECORD_URL_TEMPLATE + "&boundary=" + boundary;
+    private String buildFaceUrl(String boundary, FaceUploadMode mode) {
+        return mode.method() + " " + mode.isapiPath() + "?format=json&boundary=" + boundary;
     }
 
-    private byte[] buildFaceMultipartBody(String employeeNo, byte[] imageBytes, String boundary) {
+    private byte[] buildFaceMultipartBody(String employeeNo, byte[] imageBytes, String boundary, FaceUploadMode mode) {
+        // The Hikvision multipart parser extracts the part named
+        // "FaceDataRecord", then reads its RAW bytes as the JSON object. The
+        // outer {"FaceDataRecord":{...}} wrapper is NOT expected and produced
+        // statusCode=5 / subStatusCode=badJsonFormat on the test device. Build
+        // the BARE object exactly as documented:
+        //   {"faceLibType":"blackFD","FDID":"1","FPID":"<employeeNo>"}
+        //   - faceLibType "blackFD" is the Hikvision face-library type code for
+        //     the master face database (the legacy doc value "blackFace" was a
+        //     legacy typographic variant that some firmwares reject).
+        //   - FDID "1" is the default face library id for access-control
+        //     terminals; the bridge can lift this into config when needed.
+        //   - FPID is the face-id, mapped to the user employeeNo for
+        //     access-control devices, mirroring the direct-IP integration.
         Map<String, Object> faceDataRecord = new LinkedHashMap<>();
-        faceDataRecord.put("employeeNo", employeeNo);
-        faceDataRecord.put("faceLibType", "blackFace");
-
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("FaceDataRecord", faceDataRecord);
-        byte[] faceDataJson = JSON.toJSONString(payload).getBytes(StandardCharsets.UTF_8);
+        faceDataRecord.put("faceLibType", "blackFD");
+        faceDataRecord.put("FDID", "1");
+        faceDataRecord.put("FPID", employeeNo);
+        byte[] faceDataJson = JSON.toJSONString(faceDataRecord).getBytes(StandardCharsets.UTF_8);
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
+        // Part 1: FaceDataRecord (text JSON). Always first - Hikvision parses
+        // the JSON descriptor before consuming the binary image part.
         writeAscii(output, "--" + boundary + "\r\n");
         writeAscii(output, "Content-Disposition: form-data; name=\"FaceDataRecord\"\r\n");
         writeAscii(output, "Content-Type: application/json\r\n");
         writeAscii(output, "Content-Length: " + faceDataJson.length + "\r\n\r\n");
         output.writeBytes(faceDataJson);
         writeAscii(output, "\r\n");
+        // Part 2: image field name varies per device family (FaceImage / img).
         writeAscii(output, "--" + boundary + "\r\n");
-        writeAscii(output, "Content-Disposition: form-data; name=\"FaceImage\"; filename=\"face.jpg\"\r\n");
+        writeAscii(output, "Content-Disposition: form-data; name=\"" + mode.imageFieldName() + "\"; filename=\"face.jpg\"\r\n");
         writeAscii(output, "Content-Type: image/jpeg\r\n");
         writeAscii(output, "Content-Length: " + imageBytes.length + "\r\n");
         writeAscii(output, "Content-Transfer-Encoding: binary\r\n\r\n");
@@ -325,6 +348,49 @@ public class HikvisionProvisioningService {
         writeAscii(output, "\r\n");
         writeAscii(output, "--" + boundary + "--\r\n");
         return output.toByteArray();
+    }
+
+    /**
+     * Renders a small, text-only preview of the multipart preamble (everything
+     * up to the binary image part) so operators can confirm part ordering and
+     * field names in logs. Stops before the JPEG bytes so no image data is
+     * ever logged.
+     */
+    private String describeMultipartPreamble(byte[] multipartBody) {
+        if (multipartBody == null || multipartBody.length == 0) {
+            return "<empty>";
+        }
+        int limit = Math.min(multipartBody.length, MULTIPART_PREAMBLE_LOG_LIMIT);
+        // Stop at the boundary between the two parts, just before the binary
+        // image part's body, to guarantee we never include JPEG bytes.
+        int imagePartStart = indexOfAscii(multipartBody, "\r\n\r\n", indexOfAscii(multipartBody, "image/jpeg", 0));
+        if (imagePartStart > 0 && imagePartStart < limit) {
+            limit = imagePartStart;
+        }
+        return new String(multipartBody, 0, limit, StandardCharsets.US_ASCII)
+                .replace("\r", "\\r")
+                .replace("\n", "\\n");
+    }
+
+    private int indexOfAscii(byte[] haystack, String needle, int from) {
+        if (needle.isEmpty()) {
+            return from;
+        }
+        byte[] needleBytes = needle.getBytes(StandardCharsets.US_ASCII);
+        int max = haystack.length - needleBytes.length;
+        for (int i = Math.max(0, from); i <= max; i++) {
+            boolean match = true;
+            for (int j = 0; j < needleBytes.length; j++) {
+                if (haystack[i + j] != needleBytes[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private void writeAscii(ByteArrayOutputStream output, String value) {

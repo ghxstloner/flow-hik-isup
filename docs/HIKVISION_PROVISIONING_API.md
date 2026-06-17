@@ -292,13 +292,37 @@ Bridge face upload internals (phase-1 fix):
   `multipart/form-data; boundary=<boundary>` payload with two parts, in this
   fixed order:
     1. `FaceDataRecord` (JSON, `Content-Type: application/json`):
-       `{"FaceDataRecord":{"employeeNo":"<employeeNo>","faceLibType":"blackFace"}}`
-    2. `FaceImage` (binary JPEG, `Content-Type: image/jpeg`,
-       `Content-Transfer-Encoding: binary`): the normalized photo bytes.
-- `FPID`/`FDID` are not added; Hikvision access-control devices key the face to
-  the user via `employeeNo` in the `FaceDataRecord` part. `faceLibType` stays
-  `blackFace` to match the working direct-IP Laravel implementation
-  (`HikvisionUserSyncService::sendFace`).
+       **bare** object, NOT wrapped:
+       ```json
+       {"faceLibType":"blackFD","FDID":"1","FPID":"<employeeNo>"}
+       ```
+       Why bare: the Hikvision multipart parser extracts the part named
+       `FaceDataRecord` and parses its raw bytes directly as the descriptor
+       object. The earlier `{"FaceDataRecord":{"employeeNo":...,"faceLibType":"blackFace"}}`
+       shape was rejected with `statusCode=5` / `subStatusCode=badJsonFormat`.
+       Field semantics:
+         - `faceLibType = "blackFD"`: Hikvision face-library type code for the
+           master face database (the prior value `"blackFace"` is rejected by
+           some firmwares).
+         - `FDID = "1"`: default face library id on access-control terminals.
+         - `FPID = "<employeeNo>"`: face id, mapped to the user employeeNo so
+           the face binds to the provisioned access-control user.
+    2. Image part (binary JPEG, `Content-Type: image/jpeg`,
+       `Content-Transfer-Encoding: binary`): the normalized photo bytes. The
+       field name is mode-dependent (`FaceImage` or `img`) — see
+       `hik.provisioning.face-upload-mode` below.
+- Different Hikvision device families expose face enrolment under different
+  paths and image field names. The bridge exposes a single tunable:
+  `hik.provisioning.face-upload-mode` (env `FLOW_HIK_FACE_UPLOAD_MODE`):
+    - `face-data-record-faceimage` (default):
+      `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json`, image field `FaceImage`.
+    - `face-data-record-img`:
+      `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json`, image field `img`.
+    - `fd-setup-img`:
+      `PUT /ISAPI/Intelligent/FDLib/FDSetUp?format=json`, image field `img`.
+  If the device returns `badJsonFormat`, leave the `FaceDataRecord` JSON bare
+  and switch to `face-data-record-img`; if that still fails, try `fd-setup-img`
+  (which also changes the verb to `PUT`).
 - Photos are normalized through `FaceImageNormalizer` before upload, mirroring
   the proven Laravel `HikvisionPhotoProcessor` configuration:
     - resize to at most `300 x 300` keeping aspect ratio;
@@ -316,12 +340,17 @@ Safe debug logs emitted per face upload (metadata only, never image bytes or
 `photo.contentBase64`):
 
 - `employeeNo`
+- `mode` (resolved `FaceUploadMode` name)
 - original image byte length
 - final (normalized) image byte length
 - whether the original JPEG was progressive
 - multipart total byte length
 - content type (`multipart/form-data`) + boundary
-- target ISAPI path
+- the **actual** ISAPI URL string passed to `NET_ECMS_ISAPIPassThrough`,
+  including the `&boundary=` query parameter
+- image field name (`FaceImage` / `img`)
+- text-only multipart preamble (part ordering + field names; truncated before
+  the binary image bytes)
 - sdk error code + raw response length
 
 Upload face for employee `1001`:
