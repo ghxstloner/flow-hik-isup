@@ -198,7 +198,7 @@ public class ProvisioningController {
             RawIsapiResponse body = rawIsapiDiagnosticService.rejected(
                     deviceId,
                     request,
-                    "Only GET /ISAPI/System/deviceInfo and GET /ISAPI/AccessControl/UserInfo/capabilities are allowed."
+                    "Only read-only GET capability paths are allowed (deviceInfo, UserInfo/capabilities, FDLib, FDLib/capabilities, FDLib/FaceDataRecord/capabilities, FDLib/FDSetUp/capabilities)."
             );
             return response(HttpStatus.BAD_REQUEST, "Unsafe or unsupported ISAPI diagnostic request.", body);
         }

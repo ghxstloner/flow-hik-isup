@@ -50,6 +50,7 @@ public class HikvisionProvisioningService {
     private final CmsUtil cmsUtil;
     private final FaceImageNormalizer faceImageNormalizer;
     private final HikProvisioningProperties provisioningProperties;
+    private final FaceUrlStore faceUrlStore;
 
     public ProvisioningResponse syncUser(Device device, String employeeNo, UserSyncRequest request) {
         log.info("Hikvision user sync requested: deviceId={}, employeeNo={}, correlationId={}",
@@ -253,6 +254,64 @@ public class HikvisionProvisioningService {
 
         FaceUploadMode mode = FaceUploadMode.fromConfig(provisioningProperties.getFaceUploadMode());
 
+        if (mode == FaceUploadMode.FACE_URL) {
+            return uploadFaceByUrl(device, employeeNo, face, mode);
+        }
+        return uploadFaceByMultipart(device, employeeNo, face, mode);
+    }
+
+    /**
+     * URL-based enrollment. The bridge publishes the normalized JPEG at a
+     * temporary unguessable internal URL (see {@link FaceUrlStore}) and sends
+     * a JSON-only request carrying that URL in the Hikvision {@code faceUrl}
+     * field. The device then fetches the JPEG over HTTP just like iVMS-4200
+     * "add by URL". This is the escape hatch for firmware that rejects the
+     * binary multipart path with {@code badJsonFormat}.
+     */
+    private FaceUploadResult uploadFaceByUrl(Device device, String employeeNo,
+                                             FaceImageNormalizer.NormalizedFace face, FaceUploadMode mode) {
+        String faceUrl = faceUrlStore.publish(employeeNo, face.bytes());
+        String payload = mode.faceRecordJson(employeeNo, faceUrl);
+        byte[] payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
+        String url = mode.method() + " " + mode.isapiPath() + "?format=json";
+
+        log.info("Face upload (URL mode) prepared: deviceId={}, employeeNo={}, mode={}, faceUrl={}, payloadHasFaceUrl=true, payloadBytes={}, isapiUrl={}",
+                device.getDeviceId(),
+                employeeNo,
+                mode.name(),
+                faceUrl,
+                payloadBytes.length,
+                url);
+
+        CmsUtil.IsapiPassThroughResult result = cmsUtil.passThroughBytesWithStatus(
+                device.getLoginId(),
+                url,
+                payloadBytes,
+                FACE_PASSTHROUGH_TIMEOUT_MS
+        );
+
+        boolean success = result.isSuccess()
+                && StringUtils.isBlank(result.getSdkError())
+                && isSuccessfulIsapiResponse(result.getRawResponse());
+
+        // Always revoke the temporary URL on completion - success (one-shot)
+        // and failure (don't leave the byte buffer queryable).
+        faceUrlStore.clear();
+
+        log.info("Face upload (URL mode) result: deviceId={}, employeeNo={}, url={}, success={}, transportOk={}, sdkError={}, rawResponseLength={}",
+                device.getDeviceId(),
+                employeeNo,
+                url,
+                success,
+                result.isSuccess(),
+                result.getSdkError(),
+                result.getRawResponse() == null ? 0 : result.getRawResponse().length());
+
+        return new FaceUploadResult(success, result.getRawResponse(), result.getSdkError());
+    }
+
+    private FaceUploadResult uploadFaceByMultipart(Device device, String employeeNo,
+                                                   FaceImageNormalizer.NormalizedFace face, FaceUploadMode mode) {
         // Guzzle-style boundary: a plain ASCII token like "flowhikface<uuid>".
         // The leading "--" delimiters are written separately in the body per
         // RFC 2046 - the boundary value itself carries no dashes, matching
@@ -266,7 +325,7 @@ public class HikvisionProvisioningService {
                 device.getDeviceId(),
                 employeeNo,
                 mode.name(),
-                mode.faceRecordJson(employeeNo),
+                mode.faceRecordJson(employeeNo, null),
                 face.originalBytes(),
                 face.originalProgressive(),
                 face.normalizedBytes(),
@@ -313,13 +372,13 @@ public class HikvisionProvisioningService {
 
     private byte[] buildFaceMultipartBody(String employeeNo, byte[] imageBytes, String boundary, FaceUploadMode mode) {
         // The Hikvision multipart parser extracts the part named
-        // "FaceDataRecord", then reads its RAW bytes as the JSON object. The
-        // outer {"FaceDataRecord":{...}} wrapper is NOT expected and produced
-        // statusCode=5 / subStatusCode=badJsonFormat on the test device. We
-        // therefore emit the BARE descriptor object. The exact field set is
-        // owned by FaceUploadMode because FDSetUp additionally requires
-        // "employeeNo" (returns MessageParametersLack otherwise).
-        byte[] faceDataJson = mode.faceRecordJson(employeeNo).getBytes(StandardCharsets.UTF_8);
+        // "FaceDataRecord" and re-attaches the outer key from the JSON payload
+        // we provide here. To mirror the proven direct-IP Laravel
+        // implementation (HikvisionUserSyncService::sendFace via Guzzle), the
+        // part body is the WRAPPED object {"FaceDataRecord":{...}}. Earlier
+        // bare-object attempts were rejected with statusCode=5 / badJsonFormat
+        // on the DS-K1T321MFWX, so we restored the wrapper.
+        byte[] faceDataJson = mode.faceRecordJson(employeeNo, null).getBytes(StandardCharsets.UTF_8);
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         // Part 1: FaceDataRecord (text JSON). Always first - Hikvision parses

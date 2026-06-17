@@ -324,6 +324,23 @@ Bridge face upload internals (phase-1 fix):
   leading dashes). The leading `--` before the boundary value in each body
   delimiter is written separately per RFC 2046, matching Laravel
   `Http::attach` / Guzzle `MultipartStream` output exactly.
+- If the device rejects the binary multipart path with `statusCode=5
+  badJsonFormat` despite the cleaned format, set
+  `hik.provisioning.face-upload-mode=face-url`. In this mode the bridge does
+  NOT send binary multipart at all:
+    1. It publishes the normalized JPEG at a temporary, unguessable internal
+       URL via `FaceUrlStore` (192-bit `SecureRandom` token, one-shot, 5-min
+       TTL, served by `TinyFaceTokenController` at the configured
+       `hik.face-url.path-prefix`). The public host:port is derived from
+       `hik.stream.http` (or explicitly via `hik.face-url.base-url`).
+    2. It sends a JSON-only `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json`
+       with body:
+       ```json
+       {"FaceDataRecord":{"faceLibType":"blackFD","FDID":"1","FPID":"<employeeNo>","faceUrl":"http://<bridge>/internal/face/<token>"}}
+       ```
+    3. The device fetches the JPEG from `faceUrl` over HTTP, then the bridge
+       revoke the temp URL on completion (success or failure).
+  The device URL must be reachable from the device's network to the bridge.
 - Different Hikvision device families expose face enrolment under different
   paths and image field names. The bridge exposes a single tunable:
   `hik.provisioning.face-upload-mode` (env `FLOW_HIK_FACE_UPLOAD_MODE`):
@@ -570,8 +587,16 @@ Phase-1 behavior:
 - Allows only:
   - `GET /ISAPI/System/deviceInfo`
   - `GET /ISAPI/AccessControl/UserInfo/capabilities`
+  - `GET /ISAPI/Intelligent/FDLib`
+  - `GET /ISAPI/Intelligent/FDLib/capabilities`
+  - `GET /ISAPI/Intelligent/FDLib/FaceDataRecord/capabilities`
+  - `GET /ISAPI/Intelligent/FDLib/FDSetUp/capabilities`
 - Rejects `PUT`, `POST`, `DELETE`, user creation, face upload, and all other paths. User setup is available only through `PUT /api/devices/{deviceId}/users/{employeeNo}`.
 - User verification is available only through `GET /api/devices/{deviceId}/users/{employeeNo}/verify`.
+- The FDLib and UserInfo `capabilities` GETs are automatically sent with
+  `?format=json` so the operator can read FDID lists, valid `faceLibType`
+  values, and supported enrollment flows (FaceDataRecord vs FDSetUp vs
+  FaceURL) directly without XML parsing.
 
 Successful response shape:
 
@@ -630,6 +655,37 @@ curl -sS -X POST 'http://localhost:16233/api/devices/1/isapi' \
   -H "Content-Type: application/json" \
   -H "X-Flow-Bridge-Token: ${FLOW_BRIDGE_TOKEN}" \
   -d '{"method":"GET","path":"/ISAPI/AccessControl/UserInfo/capabilities"}'
+```
+
+Get face-library discovery info (FDID list + faceLibType values, used to
+debug face-upload `badJsonFormat`/`MessageParametersLack` rejections):
+
+```shell
+curl -sS -X POST 'http://localhost:16233/api/devices/1/isapi' \
+  -H "Content-Type: application/json" \
+  -H "X-Flow-Bridge-Token: ${FLOW_BRIDGE_TOKEN}" \
+  -d '{"method":"GET","path":"/ISAPI/Intelligent/FDLib"}'
+```
+
+```shell
+curl -sS -X POST 'http://localhost:16233/api/devices/1/isapi' \
+  -H "Content-Type: application/json" \
+  -H "X-Flow-Bridge-Token: ${FLOW_BRIDGE_TOKEN}" \
+  -d '{"method":"GET","path":"/ISAPI/Intelligent/FDLib/capabilities"}'
+```
+
+```shell
+curl -sS -X POST 'http://localhost:16233/api/devices/1/isapi' \
+  -H "Content-Type: application/json" \
+  -H "X-Flow-Bridge-Token: ${FLOW_BRIDGE_TOKEN}" \
+  -d '{"method":"GET","path":"/ISAPI/Intelligent/FDLib/FaceDataRecord/capabilities"}'
+```
+
+```shell
+curl -sS -X POST 'http://localhost:16233/api/devices/1/isapi' \
+  -H "Content-Type: application/json" \
+  -H "X-Flow-Bridge-Token: ${FLOW_BRIDGE_TOKEN}" \
+  -d '{"method":"GET","path":"/ISAPI/Intelligent/FDLib/FDSetUp/capabilities"}'
 ```
 
 Unsafe requests are rejected before reaching the SDK:

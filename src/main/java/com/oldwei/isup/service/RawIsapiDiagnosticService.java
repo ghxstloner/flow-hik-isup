@@ -21,6 +21,28 @@ public class RawIsapiDiagnosticService {
 
     private static final Set<String> ALLOWED_GET_PATHS = Set.of(
             "/ISAPI/System/deviceInfo",
+            "/ISAPI/AccessControl/UserInfo/capabilities",
+            // Read-only face-library discovery. Used to debug face-upload
+            // "badJsonFormat" / "MessageParametersLack" rejections on models
+            // whose expected FDID/faceLibType/FaceDataRecord-vs-FaceURL flow is
+            // unknown. All output-only; never used for mutations.
+            "/ISAPI/Intelligent/FDLib",
+            "/ISAPI/Intelligent/FDLib/capabilities",
+            "/ISAPI/Intelligent/FDLib/FaceDataRecord/capabilities",
+            "/ISAPI/Intelligent/FDLib/FDSetUp/capabilities"
+    );
+
+    /**
+     * GET paths whose response is JSON-capable. We force {@code ?format=json}
+     * on the wire so operators can read the raw capability payload directly
+     * without XML parsing. All entries must also live in
+     * {@link #ALLOWED_GET_PATHS}.
+     */
+    private static final Set<String> JSON_FORMAT_GET_PATHS = Set.of(
+            "/ISAPI/Intelligent/FDLib",
+            "/ISAPI/Intelligent/FDLib/capabilities",
+            "/ISAPI/Intelligent/FDLib/FaceDataRecord/capabilities",
+            "/ISAPI/Intelligent/FDLib/FDSetUp/capabilities",
             "/ISAPI/AccessControl/UserInfo/capabilities"
     );
 
@@ -46,10 +68,16 @@ public class RawIsapiDiagnosticService {
     public RawIsapiResponse execute(Device device, RawIsapiRequest request) {
         String method = normalizeMethod(request.getMethod());
         String path = normalizePath(request.getPath());
-        String requestUrl = method + " " + path;
+        // FDLib / UserInfo capability payloads are JSON-capable; force
+        // ?format=json on those GETs so the operator can read FDID lists,
+        // faceLibType values, and supported enrollment flows directly.
+        String wirePath = JSON_FORMAT_GET_PATHS.contains(path) && !path.contains("format=")
+                ? path + "?format=json"
+                : path;
+        String requestUrl = method + " " + wirePath;
 
-        log.info("Raw ISAPI diagnostic requested: deviceId={}, loginId={}, method={}, path={}",
-                device.getDeviceId(), device.getLoginId(), method, path);
+        log.info("Raw ISAPI diagnostic requested: deviceId={}, loginId={}, method={}, path={}, wirePath={}",
+                device.getDeviceId(), device.getLoginId(), method, path, wirePath);
 
         CmsUtil.IsapiPassThroughResult result = cmsUtil.passThroughWithStatus(device.getLoginId(), requestUrl, "");
         return new RawIsapiResponse(

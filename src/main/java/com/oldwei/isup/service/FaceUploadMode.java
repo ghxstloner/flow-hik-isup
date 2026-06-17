@@ -45,10 +45,21 @@ public enum FaceUploadMode {
      * {@code img}. Some Hikvision ISAPI firmwares expose face enrolment under
      * this path and require {@code PUT}.
      */
-    FD_SETUP_IMG(
-            "PUT",
-            "/ISAPI/Intelligent/FDLib/FDSetUp",
-            "img"
+    /**
+     * URL-based face enrollment. No binary multipart. The bridge publishes the
+     * normalized JPEG at a temporary unguessable internal URL via
+     * {@link com.oldwei.isup.service.FaceUrlStore} and sends a JSON-only
+     * request containing that URL in the Hikvision {@code faceUrl} field to
+     * {@code POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json}.
+     *
+     * <p>This is the escape hatch for device families whose firmware cannot
+     * parse the binary multipart {@code badJsonFormat} path - the device
+     * fetches the JPEG over HTTP just like iVMS-4200 "add by URL".
+     */
+    FACE_URL(
+            "POST",
+            "/ISAPI/Intelligent/FDLib/FaceDataRecord",
+            null
     );
 
     private final String method;
@@ -74,39 +85,51 @@ public enum FaceUploadMode {
     }
 
     /**
-     * Builds the BARE JSON object emitted into the {@code FaceDataRecord}
-     * multipart part. Hikvision's multipart parser reads the part raw bytes
-     * directly as the descriptor object, so we never wrap it in an outer
-     * {@code {"FaceDataRecord":{...}}} key.
+     * Builds the JSON string for this mode.
      *
-     * <p>The shape is mode-dependent because the two endpoints accept slightly
-     * different field sets on access-control firmware:
-     * <ul>
-     *   <li>{@code FaceDataRecord} endpoints want the FDLib face descriptor
-     *       with {@code faceLibType}, {@code FDID}, {@code FPID}.</li>
-     *   <li>{@code FDSetUp} additionally expects {@code employeeNo} so the
-     *       enrolled face binds to the access-control user - omitting it makes
-     *       the device return {@code statusCode=6 / MessageParametersLack}.</li>
-     * </ul>
+     * <p>Why this shape: the direct-IP Laravel implementation (the only one
+     * proven to work on this device family through Guzzle multipart) emits the
+     * WRAPPED key {@code {"FaceDataRecord":{...}}} - claims that the Hikvision
+     * multipart parser strips the part name and re-attaches this outer key.
+     * Earlier bare-object attempts produced {@code badJsonFormat} on the
+     * DS-K1T321MFWX, so the wrapper is restored here to mirror Laravel exactly
+     * and isolate the remaining variable to the binary-transfer path.
+     *
+     * <p>The {@code FACE_URL} mode emits a flat JSON body with a
+     * {@code faceUrl} field that the device fetches over HTTP - the binary
+     * multipart path is skipped entirely.
      */
-    public String faceRecordJson(String employeeNo) {
+    public String faceRecordJson(String employeeNo, String faceUrl) {
+        Map<String, Object> body = new LinkedHashMap<>();
         Map<String, Object> record = new LinkedHashMap<>();
         switch (this) {
+            case FACE_URL -> {
+                record.put("faceLibType", "blackFD");
+                record.put("FDID", "1");
+                record.put("FPID", employeeNo);
+                record.put("faceUrl", faceUrl);
+                body.put("FaceDataRecord", record);
+                return com.alibaba.fastjson2.JSON.toJSONString(body);
+            }
             case FD_SETUP_IMG -> {
-                // FDSetUp endpoint: bind to the access-control user explicitly.
                 record.put("employeeNo", employeeNo);
                 record.put("faceLibType", "blackFD");
                 record.put("FDID", "1");
                 record.put("FPID", employeeNo);
+                body.put("FaceDataRecord", record);
+                return com.alibaba.fastjson2.JSON.toJSONString(body);
             }
             default -> {
-                // FaceDataRecord endpoints: the canonical FDLib descriptor.
-                record.put("faceLibType", "blackFD");
-                record.put("FDID", "1");
-                record.put("FPID", employeeNo);
+                // Mirrors Laravel's HikvisionUserSyncService::sendFace exactly:
+                //   {"FaceDataRecord":{"employeeNo":"<e>","faceLibType":"blackFace"}}
+                // "blackFace" matches the working direct-IP reference; the
+                // earlier "blackFD" guess was never validated on this device.
+                record.put("employeeNo", employeeNo);
+                record.put("faceLibType", "blackFace");
+                body.put("FaceDataRecord", record);
+                return com.alibaba.fastjson2.JSON.toJSONString(body);
             }
         }
-        return com.alibaba.fastjson2.JSON.toJSONString(record);
     }
 
     /**
@@ -122,6 +145,7 @@ public enum FaceUploadMode {
             case "face-data-record-faceimage" -> FACE_DATA_RECORD_FACEIMAGE;
             case "face-data-record-img" -> FACE_DATA_RECORD_IMG;
             case "fd-setup-img" -> FD_SETUP_IMG;
+            case "face-url" -> FACE_URL;
             default -> FACE_DATA_RECORD_FACEIMAGE;
         };
     }
