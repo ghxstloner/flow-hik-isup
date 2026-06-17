@@ -57,6 +57,12 @@ hik:
       enabled: false
     channel-sync:
       enabled: false
+    provisioning:
+      enabled: false
+    raw-isapi:
+      enabled: false
+  bridge:
+    token: ${FLOW_BRIDGE_TOKEN:}
 ```
 
 The corresponding environment variables are:
@@ -69,6 +75,9 @@ HIK_STORAGE_ENABLED=false
 HIK_VOICE_ENABLED=false
 HIK_PLAYBACK_ENABLED=false
 HIK_CHANNEL_SYNC_ENABLED=false
+FLOW_HIK_PROVISIONING_ENABLED=false
+FLOW_HIK_RAW_ISAPI_ENABLED=false
+FLOW_BRIDGE_TOKEN=change-me
 ```
 
 ## Ports
@@ -91,6 +100,15 @@ Filter by device ID or online state:
 
 ```shell
 curl "http://localhost:16233/api/devices?deviceId=DEVICE_ID&isOnline=1"
+```
+
+Internal provisioning endpoints are disabled by default and require `X-Flow-Bridge-Token` when enabled:
+
+```shell
+curl -X PUT "http://localhost:16233/api/devices/1/users/456" \
+  -H "Content-Type: application/json" \
+  -H "X-Flow-Bridge-Token: $FLOW_BRIDGE_TOKEN" \
+  -d '{"employee":{"employeeNo":"456"}}'
 ```
 
 ## Docker

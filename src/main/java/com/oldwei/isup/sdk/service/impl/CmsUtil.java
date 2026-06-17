@@ -143,6 +143,10 @@ public class CmsUtil {
      * @param reqContent 透传的报文内容，完整的报文内容字段定义以及业务字段说明，请您自行申请产品型号的ISAPI协议文档查看
      */
     public String passThrough(int loginID, String reqUrl, String reqContent) {
+        return passThroughWithStatus(loginID, reqUrl, reqContent).getRawResponse();
+    }
+
+    public IsapiPassThroughResult passThroughWithStatus(int loginID, String reqUrl, String reqContent) {
         if (reqUrl == null) {
             throw new RuntimeException("示例代码中修改的透传的请求地址为null");
         }
@@ -179,12 +183,38 @@ public class CmsUtil {
         m_struParam.dwRecvTimeOut = 5000; // 接收超时时间，单位毫秒
         m_struParam.write();
         if (!hcisupcms.NET_ECMS_ISAPIPassThrough(loginID, m_struParam)) {
-            System.out.println("NET_ECMS_ISAPIPassThrough failed, error：" + hcisupcms.NET_ECMS_GetLastError());
+            int error = hcisupcms.NET_ECMS_GetLastError();
+            System.out.println("NET_ECMS_ISAPIPassThrough failed, error：" + error);
+            return new IsapiPassThroughResult(false, "", String.valueOf(error));
         } else {
             m_struParam.read();
             ptrOutByte2.read();
         }
-        return new String(ptrOutByte2.byValue).trim();
+        return new IsapiPassThroughResult(true, new String(ptrOutByte2.byValue).trim(), null);
+    }
+
+    public static class IsapiPassThroughResult {
+        private final boolean success;
+        private final String rawResponse;
+        private final String sdkError;
+
+        public IsapiPassThroughResult(boolean success, String rawResponse, String sdkError) {
+            this.success = success;
+            this.rawResponse = rawResponse;
+            this.sdkError = sdkError;
+        }
+
+        public boolean isSuccess() {
+            return success;
+        }
+
+        public String getRawResponse() {
+            return rawResponse;
+        }
+
+        public String getSdkError() {
+            return sdkError;
+        }
     }
 
     /**

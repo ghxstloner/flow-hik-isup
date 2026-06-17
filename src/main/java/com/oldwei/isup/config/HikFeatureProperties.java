@@ -16,6 +16,8 @@ public class HikFeatureProperties {
     private Feature voice = enabled(false);
     private Feature playback = enabled(false);
     private Feature channelSync = enabled(false);
+    private Feature provisioning = enabled(false);
+    private Feature rawIsapi = enabled(false);
 
     private static Feature enabled(boolean enabled) {
         Feature feature = new Feature();

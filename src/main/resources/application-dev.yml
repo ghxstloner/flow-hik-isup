@@ -7,6 +7,30 @@ server:
   address: 0.0.0.0
 
 hik:
+  bridge:
+    # Internal API token required by X-Flow-Bridge-Token.
+    token: ${FLOW_BRIDGE_TOKEN:}
+
+  features:
+    cms:
+      enabled: ${FLOW_HIK_CMS_ENABLED:true}
+    provisioning:
+      enabled: ${FLOW_HIK_PROVISIONING_ENABLED:false}
+    raw-isapi:
+      enabled: ${FLOW_HIK_RAW_ISAPI_ENABLED:false}
+    alarm:
+      enabled: ${FLOW_HIK_ALARM_ENABLED:false}
+    stream:
+      enabled: ${FLOW_HIK_STREAM_ENABLED:false}
+    storage:
+      enabled: ${FLOW_HIK_STORAGE_ENABLED:false}
+    voice:
+      enabled: ${FLOW_HIK_VOICE_ENABLED:false}
+    playback:
+      enabled: ${FLOW_HIK_PLAYBACK_ENABLED:false}
+    channel-sync:
+      enabled: ${FLOW_HIK_CHANNEL_SYNC_ENABLED:false}
+
   platform:
     pushAddress: ${FLOW_APP_PUSH_ADDRESS:http://127.0.0.1:9080/iot/event/HK/callback}
     ttsServer: ${FLOW_TTS_SERVER:http://127.0.0.1:3000/api/v1/tts/generateJson}
