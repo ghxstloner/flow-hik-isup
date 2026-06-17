@@ -34,12 +34,20 @@ public class HikvisionProvisioningService {
 
     private static final String SET_UP_USER_URL = "PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json";
     private static final String SEARCH_USER_URL = "POST /ISAPI/AccessControl/UserInfo/Search?format=json";
-    private static final String FACE_DATA_RECORD_URL = "POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
+    /**
+     * Face upload path. The literal {@code format=json} and the
+     * {@code __BOUNDARY__} token are appended per upload so the device can
+     * locate the multipart boundary without an HTTP {@code Content-Type}
+     * header (the ISUP pass-through struct does not expose headers).
+     */
+    private static final String FACE_DATA_RECORD_URL_TEMPLATE = "POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
     private static final String JPEG_CONTENT_TYPE = "image/jpeg";
     private static final String DEFAULT_BEGIN_TIME = "2020-01-01T00:00:00";
     private static final String DEFAULT_END_TIME = "2037-12-31T23:59:59";
+    private static final int FACE_PASSTHROUGH_TIMEOUT_MS = 10000;
 
     private final CmsUtil cmsUtil;
+    private final FaceImageNormalizer faceImageNormalizer;
 
     public ProvisioningResponse syncUser(Device device, String employeeNo, UserSyncRequest request) {
         log.info("Hikvision user sync requested: deviceId={}, employeeNo={}, correlationId={}",
@@ -216,30 +224,80 @@ public class HikvisionProvisioningService {
     private FaceUploadResult uploadFace(Device device, String employeeNo, ProvisioningPhoto photo) {
         String validationError = validatePhoto(photo);
         if (validationError != null) {
+            log.warn("Face upload rejected by validation: deviceId={}, employeeNo={}, reason={}",
+                    device.getDeviceId(), employeeNo, validationError);
             return new FaceUploadResult(false, "", validationError);
         }
 
-        byte[] imageBytes = decodePhoto(photo);
-        String boundary = "----flow-hik-isup-" + UUID.randomUUID();
-        byte[] multipartBody = buildFaceMultipartBody(employeeNo, imageBytes, boundary);
+        byte[] originalBytes = decodePhoto(photo);
+        FaceImageNormalizer.NormalizedFace face;
+        try {
+            face = faceImageNormalizer.normalize(originalBytes);
+        } catch (RuntimeException e) {
+            // Some readers (rare on the bundled JRE) refuse a perfectly valid
+            // JPEG. Fall back to the original bytes so the device gets a chance
+            // to validate by itself, instead of failing before the SDK call.
+            log.warn("Face image normalization failed, falling back to original bytes: deviceId={}, employeeNo={}, bytes={}, error={}",
+                    device.getDeviceId(), employeeNo, originalBytes.length, e.getMessage());
+            face = new FaceImageNormalizer.NormalizedFace(
+                    0, 0, 0, 0,
+                    originalBytes.length,
+                    originalBytes.length,
+                    FaceImageNormalizer.isProgressiveJpeg(originalBytes),
+                    FaceImageNormalizer.isProgressiveJpeg(originalBytes),
+                    originalBytes
+            );
+        }
 
-        log.info("Hikvision face upload requested: deviceId={}, employeeNo={}, photoName={}, contentType={}, bytes={}",
-                device.getDeviceId(), employeeNo, photo.getName(), photo.getContentType(), imageBytes.length);
+        // Boundary MUST be ASCII-only and MUST be passed both inside the body
+        // AND as a URL query parameter, because NET_EHOME_PTXML_PARAM has no
+        // header field - the device can only learn the multipart boundary from
+        // the URL.
+        String boundary = "----flowhikface" + UUID.randomUUID().toString().replace("-", "");
+        byte[] multipartBody = buildFaceMultipartBody(employeeNo, face.bytes(), boundary);
+        String url = buildFaceUrl(boundary);
+
+        log.info("Face upload prepared: deviceId={}, employeeNo={}, originalBytes={}, originalProgressive={}, normalizedBytes={}, normalizedProgressive={}, srcSize={}, normalizedSize={}, multipartBytes={}, contentType=multipart/form-data, boundary={}, targetUrl={}",
+                device.getDeviceId(),
+                employeeNo,
+                face.originalBytes(),
+                face.originalProgressive(),
+                face.normalizedBytes(),
+                face.normalizedProgressive(),
+                face.srcWidth() + "x" + face.srcHeight(),
+                face.outWidth() + "x" + face.outHeight(),
+                multipartBody.length,
+                boundary,
+                FACE_DATA_RECORD_URL_TEMPLATE);
 
         CmsUtil.IsapiPassThroughResult result = cmsUtil.passThroughBytesWithStatus(
                 device.getLoginId(),
-                FACE_DATA_RECORD_URL,
-                multipartBody
+                url,
+                multipartBody,
+                FACE_PASSTHROUGH_TIMEOUT_MS
         );
 
         boolean success = result.isSuccess()
                 && StringUtils.isBlank(result.getSdkError())
                 && isSuccessfulIsapiResponse(result.getRawResponse());
+
+        log.info("Face upload result: deviceId={}, employeeNo={}, success={}, transportOk={}, sdkError={}, rawResponseLength={}",
+                device.getDeviceId(),
+                employeeNo,
+                success,
+                result.isSuccess(),
+                result.getSdkError(),
+                result.getRawResponse() == null ? 0 : result.getRawResponse().length());
+
         return new FaceUploadResult(success, result.getRawResponse(), result.getSdkError());
     }
 
     private byte[] decodePhoto(ProvisioningPhoto photo) {
         return Base64.getDecoder().decode(photo.getContentBase64());
+    }
+
+    private String buildFaceUrl(String boundary) {
+        return FACE_DATA_RECORD_URL_TEMPLATE + "&boundary=" + boundary;
     }
 
     private byte[] buildFaceMultipartBody(String employeeNo, byte[] imageBytes, String boundary) {
@@ -253,13 +311,16 @@ public class HikvisionProvisioningService {
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         writeAscii(output, "--" + boundary + "\r\n");
-        writeAscii(output, "Content-Disposition: form-data; name=\"FaceDataRecord\"; filename=\"faceDataRecord.json\"\r\n");
-        writeAscii(output, "Content-Type: application/json\r\n\r\n");
+        writeAscii(output, "Content-Disposition: form-data; name=\"FaceDataRecord\"\r\n");
+        writeAscii(output, "Content-Type: application/json\r\n");
+        writeAscii(output, "Content-Length: " + faceDataJson.length + "\r\n\r\n");
         output.writeBytes(faceDataJson);
         writeAscii(output, "\r\n");
         writeAscii(output, "--" + boundary + "\r\n");
         writeAscii(output, "Content-Disposition: form-data; name=\"FaceImage\"; filename=\"face.jpg\"\r\n");
-        writeAscii(output, "Content-Type: image/jpeg\r\n\r\n");
+        writeAscii(output, "Content-Type: image/jpeg\r\n");
+        writeAscii(output, "Content-Length: " + imageBytes.length + "\r\n");
+        writeAscii(output, "Content-Transfer-Encoding: binary\r\n\r\n");
         output.writeBytes(imageBytes);
         writeAscii(output, "\r\n");
         writeAscii(output, "--" + boundary + "--\r\n");

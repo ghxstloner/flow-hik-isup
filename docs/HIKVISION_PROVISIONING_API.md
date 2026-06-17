@@ -280,6 +280,50 @@ Feature and auth requirements:
 - Supports only `photo.contentType = "image/jpeg"`.
 - Requires non-empty valid base64 in `photo.contentBase64`.
 
+Bridge face upload internals (phase-1 fix):
+
+- The ISUP `NET_ECMS_ISAPIPassThrough` struct (`NET_EHOME_PTXML_PARAM`) has no
+  header field, so the SDK cannot tell the device a
+  `Content-Type: multipart/form-data; boundary=...` header. The bridge works
+  around this by passing the boundary as a URL query parameter:
+  `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json&boundary=<boundary>`.
+  The boundary is generated ASCII-only per request.
+- The request body is a standard RFC 2388
+  `multipart/form-data; boundary=<boundary>` payload with two parts, in this
+  fixed order:
+    1. `FaceDataRecord` (JSON, `Content-Type: application/json`):
+       `{"FaceDataRecord":{"employeeNo":"<employeeNo>","faceLibType":"blackFace"}}`
+    2. `FaceImage` (binary JPEG, `Content-Type: image/jpeg`,
+       `Content-Transfer-Encoding: binary`): the normalized photo bytes.
+- `FPID`/`FDID` are not added; Hikvision access-control devices key the face to
+  the user via `employeeNo` in the `FaceDataRecord` part. `faceLibType` stays
+  `blackFace` to match the working direct-IP Laravel implementation
+  (`HikvisionUserSyncService::sendFace`).
+- Photos are normalized through `FaceImageNormalizer` before upload, mirroring
+  the proven Laravel `HikvisionPhotoProcessor` configuration:
+    - resize to at most `300 x 300` keeping aspect ratio;
+    - re-encode as **baseline** JPEG (progressive JPEGs are rejected by some
+      access-control devices, e.g. the reported `1200x1600` progressive input);
+    - cap at `200 KB` by lowering JPEG quality from `0.85` down to `0.40`.
+  If normalization cannot decode the input, the original bytes are uploaded
+  unchanged as a fallback so the device can validate them.
+- The receive timeout for the face passthrough is `10000 ms` (longer than the
+  default `5000 ms` JSON timeout) because binary multipart uploads are slower.
+- The bridge reads `dwReturnedXMLLen` from the SDK struct so `rawResponse`
+  reflects the real device body without trailing NUL padding.
+
+Safe debug logs emitted per face upload (metadata only, never image bytes or
+`photo.contentBase64`):
+
+- `employeeNo`
+- original image byte length
+- final (normalized) image byte length
+- whether the original JPEG was progressive
+- multipart total byte length
+- content type (`multipart/form-data`) + boundary
+- target ISAPI path
+- sdk error code + raw response length
+
 Upload face for employee `1001`:
 
 ```shell

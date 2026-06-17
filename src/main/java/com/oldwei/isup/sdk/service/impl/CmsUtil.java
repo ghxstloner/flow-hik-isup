@@ -154,6 +154,28 @@ public class CmsUtil {
     }
 
     public IsapiPassThroughResult passThroughBytesWithStatus(int loginID, String reqUrl, byte[] reqContent) {
+        return passThroughBytesWithStatus(loginID, reqUrl, reqContent, 5000);
+    }
+
+    /**
+     * Binary-aware ISUP pass-through.
+     *
+     * <p>{@code NET_EHOME_PTXML_PARAM} has no header field, so the bridge cannot
+     * tell the SDK a {@code Content-Type: multipart/form-data; boundary=...}
+     * header for face uploads. Hikvision devices accept the workaround of
+     * passing the boundary as a URL query parameter
+     * ({@code ...?format=json&boundary=XXX}). Callers building the multipart
+     * body must therefore include the boundary in {@code reqUrl}.
+     *
+     * <p>This overload also honors {@link NET_EHOME_PTXML_PARAM#dwReturnedXMLLen}
+     * so the returned {@code rawResponse} carries the device's actual body
+     * without the trailing NUL bytes that the SDK pads the output buffer with.
+     *
+     * @param recvTimeoutMillis receive timeout in ms; bump to e.g. {@code 10000}
+     *                          for binary multipart face uploads which are
+     *                          slower than a plain JSON request.
+     */
+    public IsapiPassThroughResult passThroughBytesWithStatus(int loginID, String reqUrl, byte[] reqContent, int recvTimeoutMillis) {
         if (reqUrl == null) {
             throw new RuntimeException("示例代码中修改的透传的请求地址为null");
         }
@@ -180,22 +202,33 @@ public class CmsUtil {
             m_struParam.pInBuffer = null; // GET获取时不需要输入参数，输入为null
         }
 
-        // 输出参数，分配的内存用于存储返回的数据，需要大于等于实际内容大小
-        int iOutSize2 = 2 * 1024 * 1024;
-        BYTE_ARRAY ptrOutByte2 = new BYTE_ARRAY(iOutSize2);
-        m_struParam.pOutBuffer = ptrOutByte2.getPointer();
-        m_struParam.dwOutSize = iOutSize2;
-        m_struParam.dwRecvTimeOut = 5000; // 接收超时时间，单位毫秒
+        int iOutSize = 2 * 1024 * 1024;
+        BYTE_ARRAY ptrOutByte = new BYTE_ARRAY(iOutSize);
+        m_struParam.pOutBuffer = ptrOutByte.getPointer();
+        m_struParam.dwOutSize = iOutSize;
+        m_struParam.dwRecvTimeOut = recvTimeoutMillis; // 接收超时时间，单位毫秒
         m_struParam.write();
         if (!hcisupcms.NET_ECMS_ISAPIPassThrough(loginID, m_struParam)) {
             int error = hcisupcms.NET_ECMS_GetLastError();
-            System.out.println("NET_ECMS_ISAPIPassThrough failed, error：" + error);
+            log.error("NET_ECMS_ISAPIPassThrough failed: loginId={}, urlLen={}, inSize={}, outSize={}, recvTimeoutMs={}, sdkError={}",
+                    loginID, reqUrl.length(), reqContent != null ? reqContent.length : 0, iOutSize, recvTimeoutMillis, error);
             return new IsapiPassThroughResult(false, "", String.valueOf(error));
         } else {
             m_struParam.read();
-            ptrOutByte2.read();
+            ptrOutByte.read();
         }
-        return new IsapiPassThroughResult(true, new String(ptrOutByte2.byValue).trim(), null);
+        // SDK pads the output buffer with NUL bytes; dwReturnedXMLLen gives the
+        // real device-body length when present (it is named "XMLLen" but is set
+        // for JSON/multipart responses too). If unset/weird, fall back to a
+        // trimmed string conversion of the whole buffer.
+        int returnedLen = m_struParam.dwReturnedXMLLen;
+        String raw;
+        if (returnedLen > 0 && returnedLen <= ptrOutByte.byValue.length) {
+            raw = new String(ptrOutByte.byValue, 0, returnedLen, StandardCharsets.UTF_8).trim();
+        } else {
+            raw = new String(ptrOutByte.byValue, StandardCharsets.UTF_8).trim();
+        }
+        return new IsapiPassThroughResult(true, raw, null);
     }
 
     public static class IsapiPassThroughResult {
