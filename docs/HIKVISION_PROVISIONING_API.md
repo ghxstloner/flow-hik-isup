@@ -290,16 +290,26 @@ Bridge face upload internals (phase-1 fix):
   The boundary is generated ASCII-only per request.
 - The request body is a standard RFC 2388
   `multipart/form-data; boundary=<boundary>` payload with two parts, in this
-  fixed order:
+  fixed order. The per-part headers are deliberately minimal (Guzzle-style):
+  only `Content-Disposition` and `Content-Type`. We do NOT emit per-part
+  `Content-Length` or `Content-Transfer-Encoding` - both are non-RFC for
+  `multipart/form-data` and were tripping the device parser into
+  `badJsonFormat`.
     1. `FaceDataRecord` (JSON, `Content-Type: application/json`):
-       **bare** object, NOT wrapped:
-       ```json
-       {"faceLibType":"blackFD","FDID":"1","FPID":"<employeeNo>"}
-       ```
+       **bare** descriptor object, NOT wrapped:
+       - On `FaceDataRecord` modes:
+         ```json
+         {"faceLibType":"blackFD","FDID":"1","FPID":"<employeeNo>"}
+         ```
+       - On `FDSetUp` mode (extra `employeeNo` field, without which the
+         device returns `statusCode=6 / MessageParametersLack`):
+         ```json
+         {"employeeNo":"<employeeNo>","faceLibType":"blackFD","FDID":"1","FPID":"<employeeNo>"}
+         ```
        Why bare: the Hikvision multipart parser extracts the part named
        `FaceDataRecord` and parses its raw bytes directly as the descriptor
        object. The earlier `{"FaceDataRecord":{"employeeNo":...,"faceLibType":"blackFace"}}`
-       shape was rejected with `statusCode=5` / `subStatusCode=badJsonFormat`.
+       shape was rejected with `statusCode=5 / subStatusCode=badJsonFormat`.
        Field semantics:
          - `faceLibType = "blackFD"`: Hikvision face-library type code for the
            master face database (the prior value `"blackFace"` is rejected by
@@ -307,10 +317,13 @@ Bridge face upload internals (phase-1 fix):
          - `FDID = "1"`: default face library id on access-control terminals.
          - `FPID = "<employeeNo>"`: face id, mapped to the user employeeNo so
            the face binds to the provisioned access-control user.
-    2. Image part (binary JPEG, `Content-Type: image/jpeg`,
-       `Content-Transfer-Encoding: binary`): the normalized photo bytes. The
-       field name is mode-dependent (`FaceImage` or `img`) — see
-       `hik.provisioning.face-upload-mode` below.
+    2. Image part (binary JPEG, `Content-Type: image/jpeg`): the normalized
+       photo bytes. The field name is mode-dependent (`FaceImage` or `img`) —
+       see `hik.provisioning.face-upload-mode` below.
+- The boundary itself is a plain ASCII token like `flowhikface<uuid>` (no
+  leading dashes). The leading `--` before the boundary value in each body
+  delimiter is written separately per RFC 2046, matching Laravel
+  `Http::attach` / Guzzle `MultipartStream` output exactly.
 - Different Hikvision device families expose face enrolment under different
   paths and image field names. The bridge exposes a single tunable:
   `hik.provisioning.face-upload-mode` (env `FLOW_HIK_FACE_UPLOAD_MODE`):

@@ -253,18 +253,20 @@ public class HikvisionProvisioningService {
 
         FaceUploadMode mode = FaceUploadMode.fromConfig(provisioningProperties.getFaceUploadMode());
 
-        // Boundary MUST be ASCII-only and MUST be passed both inside the body
-        // AND as a URL query parameter, because NET_EHOME_PTXML_PARAM has no
-        // header field - the device can only learn the multipart boundary from
-        // the URL.
-        String boundary = "----flowhikface" + UUID.randomUUID().toString().replace("-", "");
+        // Guzzle-style boundary: a plain ASCII token like "flowhikface<uuid>".
+        // The leading "--" delimiters are written separately in the body per
+        // RFC 2046 - the boundary value itself carries no dashes, matching
+        // what Laravel's Http::attach (Guzzle MultipartStream) emits and what
+        // the Hikvision device parser expects in the &boundary= URL query.
+        String boundary = "flowhikface" + UUID.randomUUID().toString().replace("-", "");
         byte[] multipartBody = buildFaceMultipartBody(employeeNo, face.bytes(), boundary, mode);
         String url = buildFaceUrl(boundary, mode);
 
-        log.info("Face upload prepared: deviceId={}, employeeNo={}, mode={}, originalBytes={}, originalProgressive={}, normalizedBytes={}, normalizedProgressive={}, srcSize={}, normalizedSize={}, multipartBytes={}, contentType=multipart/form-data, boundary={}, isapiUrl={}, imageFieldName={}, faceDataRecordPart={}",
+        log.info("Face upload prepared: deviceId={}, employeeNo={}, mode={}, faceDataRecordJson={}, originalBytes={}, originalProgressive={}, normalizedBytes={}, normalizedProgressive={}, srcSize={}, normalizedSize={}, multipartBytes={}, contentType=multipart/form-data, boundary={}, isapiUrl={}, imageFieldName={}, multipartPreamble={}",
                 device.getDeviceId(),
                 employeeNo,
                 mode.name(),
+                mode.faceRecordJson(employeeNo),
                 face.originalBytes(),
                 face.originalProgressive(),
                 face.normalizedBytes(),
@@ -313,37 +315,30 @@ public class HikvisionProvisioningService {
         // The Hikvision multipart parser extracts the part named
         // "FaceDataRecord", then reads its RAW bytes as the JSON object. The
         // outer {"FaceDataRecord":{...}} wrapper is NOT expected and produced
-        // statusCode=5 / subStatusCode=badJsonFormat on the test device. Build
-        // the BARE object exactly as documented:
-        //   {"faceLibType":"blackFD","FDID":"1","FPID":"<employeeNo>"}
-        //   - faceLibType "blackFD" is the Hikvision face-library type code for
-        //     the master face database (the legacy doc value "blackFace" was a
-        //     legacy typographic variant that some firmwares reject).
-        //   - FDID "1" is the default face library id for access-control
-        //     terminals; the bridge can lift this into config when needed.
-        //   - FPID is the face-id, mapped to the user employeeNo for
-        //     access-control devices, mirroring the direct-IP integration.
-        Map<String, Object> faceDataRecord = new LinkedHashMap<>();
-        faceDataRecord.put("faceLibType", "blackFD");
-        faceDataRecord.put("FDID", "1");
-        faceDataRecord.put("FPID", employeeNo);
-        byte[] faceDataJson = JSON.toJSONString(faceDataRecord).getBytes(StandardCharsets.UTF_8);
+        // statusCode=5 / subStatusCode=badJsonFormat on the test device. We
+        // therefore emit the BARE descriptor object. The exact field set is
+        // owned by FaceUploadMode because FDSetUp additionally requires
+        // "employeeNo" (returns MessageParametersLack otherwise).
+        byte[] faceDataJson = mode.faceRecordJson(employeeNo).getBytes(StandardCharsets.UTF_8);
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         // Part 1: FaceDataRecord (text JSON). Always first - Hikvision parses
         // the JSON descriptor before consuming the binary image part.
+        //
+        // Guzzle-style headers ONLY: Content-Disposition + Content-Type. We do
+        // NOT emit per-part Content-Length or Content-Transfer-Encoding - both
+        // are non-RFC for multipart/form-data and were tripping the device
+        // parser into badJsonFormat.
         writeAscii(output, "--" + boundary + "\r\n");
         writeAscii(output, "Content-Disposition: form-data; name=\"FaceDataRecord\"\r\n");
-        writeAscii(output, "Content-Type: application/json\r\n");
-        writeAscii(output, "Content-Length: " + faceDataJson.length + "\r\n\r\n");
+        writeAscii(output, "Content-Type: application/json\r\n\r\n");
         output.writeBytes(faceDataJson);
         writeAscii(output, "\r\n");
-        // Part 2: image field name varies per device family (FaceImage / img).
+        // Part 2: image part. Field name varies per device family (FaceImage /
+        // img). Same minimal header set as part 1.
         writeAscii(output, "--" + boundary + "\r\n");
         writeAscii(output, "Content-Disposition: form-data; name=\"" + mode.imageFieldName() + "\"; filename=\"face.jpg\"\r\n");
-        writeAscii(output, "Content-Type: image/jpeg\r\n");
-        writeAscii(output, "Content-Length: " + imageBytes.length + "\r\n");
-        writeAscii(output, "Content-Transfer-Encoding: binary\r\n\r\n");
+        writeAscii(output, "Content-Type: image/jpeg\r\n\r\n");
         output.writeBytes(imageBytes);
         writeAscii(output, "\r\n");
         writeAscii(output, "--" + boundary + "--\r\n");

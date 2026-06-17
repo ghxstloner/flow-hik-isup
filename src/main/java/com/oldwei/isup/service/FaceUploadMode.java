@@ -1,5 +1,8 @@
 package com.oldwei.isup.service;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * Face-upload protocol variant. Mirrors the strings configured under
  * {@code hik.provisioning.face-upload-mode} so the bridge can ship multiple
@@ -7,9 +10,11 @@ package com.oldwei.isup.service;
  *
  * <p>Each enum exposes:
  * <ul>
- *   <li>{@link #method}: HTTP verb for the ISAPI path;</li>
- *   <li>{@link #isapiPath}: the ISAPI path with {@code format=json};</li>
- *   <li>{@link #imageFieldName}: the multipart field name carrying the JPEG.</li>
+ *   <li>{@link #method()}: HTTP verb for the ISAPI path;</li>
+ *   <li>{@link #isapiPath()}: the ISAPI path (without query string);</li>
+ *   <li>{@link #imageFieldName()}: the multipart field name carrying the JPEG;</li>
+ *   <li>{@link #faceRecordJson(String)}: the BARE JSON object placed in the
+ *       {@code FaceDataRecord} part for this mode.</li>
  * </ul>
  */
 public enum FaceUploadMode {
@@ -66,6 +71,42 @@ public enum FaceUploadMode {
 
     public String imageFieldName() {
         return imageFieldName;
+    }
+
+    /**
+     * Builds the BARE JSON object emitted into the {@code FaceDataRecord}
+     * multipart part. Hikvision's multipart parser reads the part raw bytes
+     * directly as the descriptor object, so we never wrap it in an outer
+     * {@code {"FaceDataRecord":{...}}} key.
+     *
+     * <p>The shape is mode-dependent because the two endpoints accept slightly
+     * different field sets on access-control firmware:
+     * <ul>
+     *   <li>{@code FaceDataRecord} endpoints want the FDLib face descriptor
+     *       with {@code faceLibType}, {@code FDID}, {@code FPID}.</li>
+     *   <li>{@code FDSetUp} additionally expects {@code employeeNo} so the
+     *       enrolled face binds to the access-control user - omitting it makes
+     *       the device return {@code statusCode=6 / MessageParametersLack}.</li>
+     * </ul>
+     */
+    public String faceRecordJson(String employeeNo) {
+        Map<String, Object> record = new LinkedHashMap<>();
+        switch (this) {
+            case FD_SETUP_IMG -> {
+                // FDSetUp endpoint: bind to the access-control user explicitly.
+                record.put("employeeNo", employeeNo);
+                record.put("faceLibType", "blackFD");
+                record.put("FDID", "1");
+                record.put("FPID", employeeNo);
+            }
+            default -> {
+                // FaceDataRecord endpoints: the canonical FDLib descriptor.
+                record.put("faceLibType", "blackFD");
+                record.put("FDID", "1");
+                record.put("FPID", employeeNo);
+            }
+        }
+        return com.alibaba.fastjson2.JSON.toJSONString(record);
     }
 
     /**
