@@ -129,7 +129,7 @@ public enum FaceUploadMode {
             case "fd-setup-img" -> FD_SETUP_IMG;
             case "face-url", "face-url-flat-faceurl-upper" -> FACE_URL;
             case "face-url-flat-faceurl-lower" -> FACE_URL_LOWER;
-            case "face-url-wrapped-faceURL".toLowerCase(), "face-url-wrapped-faceurl-upper" -> FACE_URL_WRAPPED;
+            case "face-url-wrapped-faceurl", "face-url-wrapped-faceurl-upper" -> FACE_URL_WRAPPED;
             default -> FACE_DATA_RECORD_FACEIMAGE;
         };
     }
