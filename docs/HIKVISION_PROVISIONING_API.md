@@ -114,13 +114,89 @@ Bridge behavior:
 4. If `photo` exists, upload face data over the ISUP session.
 5. Return a structured result with user and face sync outcomes.
 
-Phase-1 behavior:
+Current behavior:
 
 - Requires `X-Flow-Bridge-Token`.
 - Requires `hik.features.provisioning.enabled=true`.
 - Validates `employeeNo` against `employee.employeeNo`.
-- Returns `501` with `bridgeStatus = "not_implemented"` after the service layer is called.
+- Uses `DeviceCacheService` to resolve bridge `deviceId` to the cached ISUP `loginId`.
+- Sends user data through ISUP passthrough to `PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json`.
+- Does not implement face/photo upload yet; `photoSynced` is always `false`.
 - Does not log `photo.contentBase64`.
+
+Conservative default `UserInfo` values:
+
+- `userType`: `normal`
+- `Valid.enable`: `true`
+- `Valid.beginTime`: payload `access.beginTime` or `2020-01-01T00:00:00`
+- `Valid.endTime`: payload `access.endTime` or `2037-12-31T23:59:59`
+- `Valid.timeType`: `local`
+- `doorRight`: payload `access.doorRight` or `1`
+- `RightPlan`: `doorNo = 1`, `planTemplateNo = payload access.planTemplateNo or 1`
+
+Create one user without photo:
+
+```shell
+curl -sS -X PUT 'http://localhost:16233/api/devices/1/users/456' \
+  -H "Content-Type: application/json" \
+  -H "X-Flow-Bridge-Token: ${FLOW_BRIDGE_TOKEN}" \
+  -d '{
+    "correlationId": "manual-test-456",
+    "employee": {
+      "personalId": 123,
+      "ficha": 456,
+      "employeeNo": "456",
+      "name": "TEST USER",
+      "identification": "8-888-888"
+    },
+    "access": {
+      "beginTime": "2020-01-01T00:00:00",
+      "endTime": "2037-12-31T23:59:59",
+      "doorRight": "1",
+      "planTemplateNo": "1"
+    }
+  }'
+```
+
+Successful user response:
+
+```json
+{
+  "code": 200,
+  "msg": "Success",
+  "data": {
+    "correlationId": "manual-test-456",
+    "deviceId": "1",
+    "employeeNo": "456",
+    "userSynced": true,
+    "photoSynced": false,
+    "deleted": false,
+    "bridgeStatus": "synced",
+    "rawResponse": "{\"UserInfoSetUp\":{\"statusCode\":1,\"statusString\":\"OK\"}}",
+    "sdkError": null
+  }
+}
+```
+
+Failed user response:
+
+```json
+{
+  "code": 500,
+  "msg": "Provisioning failed.",
+  "data": {
+    "correlationId": "manual-test-456",
+    "deviceId": "1",
+    "employeeNo": "456",
+    "userSynced": false,
+    "photoSynced": false,
+    "deleted": false,
+    "bridgeStatus": "failed",
+    "rawResponse": "",
+    "sdkError": "10"
+  }
+}
+```
 
 Success response:
 
@@ -244,7 +320,7 @@ Phase-1 behavior:
 - Allows only:
   - `GET /ISAPI/System/deviceInfo`
   - `GET /ISAPI/AccessControl/UserInfo/capabilities`
-- Rejects `PUT`, `POST`, `DELETE`, user creation, face upload, and all other paths.
+- Rejects `PUT`, `POST`, `DELETE`, user creation, face upload, and all other paths. User setup is available only through `PUT /api/devices/{deviceId}/users/{employeeNo}`.
 
 Successful response shape:
 

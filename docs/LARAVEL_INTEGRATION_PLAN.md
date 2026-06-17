@@ -200,7 +200,11 @@ Current behavior is intentionally conservative:
 
 - `hik.features.provisioning.enabled=false` by default.
 - `hik.features.raw-isapi.enabled=false` by default.
-- When enabled, user sync/delete calls reach the service layer and return `501` with `bridgeStatus = "not_implemented"`.
+- When enabled, user sync sends a no-photo Hikvision `UserInfo` payload through ISUP to `PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json`.
+- User sync returns `bridgeStatus = "synced"` with `userSynced = true` when the SDK call and returned ISAPI body look successful.
+- User sync returns `bridgeStatus = "failed"` with `userSynced = false`, `rawResponse`, and `sdkError` when the SDK call fails or the returned ISAPI body looks like an error.
+- Photo/face upload is still not implemented; `photoSynced = false`.
+- User delete still returns `501` with `bridgeStatus = "not_implemented"`.
 - Raw ISAPI passthrough is implemented only for safe diagnostics:
   - `GET /ISAPI/System/deviceInfo`
   - `GET /ISAPI/AccessControl/UserInfo/capabilities`

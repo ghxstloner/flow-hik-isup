@@ -15,4 +15,6 @@ public class ProvisioningResponse {
     private Boolean photoSynced;
     private Boolean deleted;
     private String bridgeStatus;
+    private String rawResponse;
+    private String sdkError;
 }

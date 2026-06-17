@@ -1,30 +1,56 @@
 package com.oldwei.isup.service;
 
+import com.alibaba.fastjson2.JSON;
 import com.oldwei.isup.model.Device;
+import com.oldwei.isup.model.provisioning.ProvisioningAccess;
+import com.oldwei.isup.model.provisioning.ProvisioningEmployee;
 import com.oldwei.isup.model.provisioning.ProvisioningResponse;
 import com.oldwei.isup.model.provisioning.ProvisioningStatus;
 import com.oldwei.isup.model.provisioning.UserDeleteRequest;
 import com.oldwei.isup.model.provisioning.UserSyncRequest;
+import com.oldwei.isup.sdk.service.impl.CmsUtil;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class HikvisionProvisioningService {
+
+    private static final String SET_UP_USER_URL = "PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json";
+    private static final String DEFAULT_BEGIN_TIME = "2020-01-01T00:00:00";
+    private static final String DEFAULT_END_TIME = "2037-12-31T23:59:59";
+
+    private final CmsUtil cmsUtil;
 
     public ProvisioningResponse syncUser(Device device, String employeeNo, UserSyncRequest request) {
         log.info("Hikvision user sync requested: deviceId={}, employeeNo={}, correlationId={}",
                 device.getDeviceId(), employeeNo, request.getCorrelationId());
 
-        // TODO: Implement ISUP-session-backed ISAPI user setup and face upload.
+        String payload = buildUserInfoPayload(employeeNo, request);
+        CmsUtil.IsapiPassThroughResult result = cmsUtil.passThroughWithStatus(
+                device.getLoginId(),
+                SET_UP_USER_URL,
+                payload
+        );
+
+        boolean success = result.isSuccess() && isSuccessfulIsapiResponse(result.getRawResponse());
         return new ProvisioningResponse(
                 request.getCorrelationId(),
                 device.getDeviceId(),
                 employeeNo,
+                success,
                 false,
                 false,
-                false,
-                ProvisioningStatus.NOT_IMPLEMENTED
+                success ? ProvisioningStatus.SYNCED : ProvisioningStatus.FAILED,
+                result.getRawResponse(),
+                result.getSdkError()
         );
     }
 
@@ -40,7 +66,56 @@ public class HikvisionProvisioningService {
                 false,
                 false,
                 false,
-                ProvisioningStatus.NOT_IMPLEMENTED
+                ProvisioningStatus.NOT_IMPLEMENTED,
+                "",
+                null
         );
+    }
+
+    private String buildUserInfoPayload(String employeeNo, UserSyncRequest request) {
+        ProvisioningEmployee employee = request.getEmployee();
+        ProvisioningAccess access = request.getAccess();
+
+        Map<String, Object> valid = new LinkedHashMap<>();
+        valid.put("enable", true);
+        valid.put("beginTime", valueOrDefault(access != null ? access.getBeginTime() : null, DEFAULT_BEGIN_TIME));
+        valid.put("endTime", valueOrDefault(access != null ? access.getEndTime() : null, DEFAULT_END_TIME));
+        valid.put("timeType", "local");
+
+        Map<String, Object> rightPlan = new LinkedHashMap<>();
+        rightPlan.put("doorNo", 1);
+        rightPlan.put("planTemplateNo", valueOrDefault(access != null ? access.getPlanTemplateNo() : null, "1"));
+
+        Map<String, Object> userInfo = new LinkedHashMap<>();
+        userInfo.put("employeeNo", employeeNo);
+        userInfo.put("name", valueOrDefault(employee != null ? employee.getName() : null, employeeNo));
+        userInfo.put("userType", valueOrDefault(access != null ? access.getUserType() : null, "normal"));
+        userInfo.put("Valid", valid);
+        userInfo.put("doorRight", valueOrDefault(access != null ? access.getDoorRight() : null, "1"));
+        userInfo.put("RightPlan", List.of(rightPlan));
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("UserInfo", userInfo);
+
+        return JSON.toJSONString(payload);
+    }
+
+    private String valueOrDefault(String value, String defaultValue) {
+        return StringUtils.isNotBlank(value) ? value : defaultValue;
+    }
+
+    private boolean isSuccessfulIsapiResponse(String rawResponse) {
+        if (StringUtils.isBlank(rawResponse)) {
+            return true;
+        }
+
+        String normalized = rawResponse.replace(" ", "").replace("\n", "").replace("\r", "");
+        if (normalized.contains("\"statusCode\":1") || normalized.contains("<statusCode>1</statusCode>")) {
+            return true;
+        }
+
+        return !normalized.contains("\"statusCode\":")
+                && !normalized.contains("<statusCode>")
+                && !StringUtils.containsIgnoreCase(normalized, "errorCode");
     }
 }

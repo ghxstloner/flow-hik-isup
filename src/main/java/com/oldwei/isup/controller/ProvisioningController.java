@@ -72,6 +72,9 @@ public class ProvisioningController {
         if (ProvisioningStatus.NOT_IMPLEMENTED.equals(result.getBridgeStatus())) {
             return response(HttpStatus.NOT_IMPLEMENTED, "Provisioning is not implemented yet.", result);
         }
+        if (ProvisioningStatus.FAILED.equals(result.getBridgeStatus())) {
+            return response(HttpStatus.ERROR, "Provisioning failed.", result);
+        }
 
         return ResponseEntity.ok(R.ok(result));
     }
@@ -172,7 +175,7 @@ public class ProvisioningController {
     }
 
     private ProvisioningResponse baseResponse(String deviceId, String employeeNo, String bridgeStatus) {
-        return new ProvisioningResponse(null, deviceId, employeeNo, false, false, false, bridgeStatus);
+        return new ProvisioningResponse(null, deviceId, employeeNo, false, false, false, bridgeStatus, "", null);
     }
 
     private <T> ResponseEntity<R<T>> response(int status, String message, T body) {
