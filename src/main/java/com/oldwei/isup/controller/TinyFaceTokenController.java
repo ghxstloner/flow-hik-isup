@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class TinyFaceTokenController {
 
-    private static final MediaType IMAGE_JPEG = MediaType.IMAGE_JPEG_JPEG;
+    private static final MediaType IMAGE_JPEG = MediaType.IMAGE_JPEG;
 
     private final FaceUrlStore faceUrlStore;
 

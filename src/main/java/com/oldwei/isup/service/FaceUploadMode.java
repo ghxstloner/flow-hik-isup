@@ -45,6 +45,12 @@ public enum FaceUploadMode {
      * {@code img}. Some Hikvision ISAPI firmwares expose face enrolment under
      * this path and require {@code PUT}.
      */
+    FD_SETUP_IMG(
+            "PUT",
+            "/ISAPI/Intelligent/FDLib/FDSetUp",
+            "img"
+    ),
+
     /**
      * URL-based face enrollment. No binary multipart. The bridge publishes the
      * normalized JPEG at a temporary unguessable internal URL via
