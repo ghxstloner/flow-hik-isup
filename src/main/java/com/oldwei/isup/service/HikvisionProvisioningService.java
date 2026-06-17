@@ -1,6 +1,7 @@
 package com.oldwei.isup.service;
 
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.oldwei.isup.model.Device;
 import com.oldwei.isup.model.provisioning.ProvisioningAccess;
@@ -173,7 +174,30 @@ public class HikvisionProvisioningService {
             return false;
         }
 
-        String normalized = rawResponse.replace(" ", "").replace("\n", "").replace("\r", "");
-        return normalized.contains("\"employeeNo\":\"" + employeeNo + "\"");
+        try {
+            JSONObject root = JSON.parseObject(rawResponse);
+            JSONObject userInfoSearch = root.getJSONObject("UserInfoSearch");
+            if (userInfoSearch == null) {
+                return false;
+            }
+
+            Object userInfo = userInfoSearch.get("UserInfo");
+            if (userInfo instanceof JSONArray users) {
+                return users.stream().anyMatch(user -> userInfoMatchesEmployee(user, employeeNo));
+            }
+
+            return userInfoMatchesEmployee(userInfo, employeeNo);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private boolean userInfoMatchesEmployee(Object userInfo, String employeeNo) {
+        if (!(userInfo instanceof JSONObject user)) {
+            return false;
+        }
+
+        Object rawEmployeeNo = user.get("employeeNo");
+        return rawEmployeeNo != null && StringUtils.equals(String.valueOf(rawEmployeeNo).trim(), employeeNo.trim());
     }
 }
