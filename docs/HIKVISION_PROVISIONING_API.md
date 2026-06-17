@@ -2,7 +2,7 @@
 
 This document defines the bridge API Laravel should call to provision Hikvision users/faces through an already registered ISUP session.
 
-The endpoints are phase-1 bridge contracts. The controller and service skeletons exist, but real ISUP/ISAPI user and face provisioning are not implemented yet. The feature flag is disabled by default.
+The endpoints are phase-1 bridge contracts. User provisioning and JPEG face upload are implemented through the cached ISUP session. The feature flag is disabled by default.
 
 Current field observation:
 
@@ -121,9 +121,10 @@ Current behavior:
 - Validates `employeeNo` against `employee.employeeNo`.
 - Uses `DeviceCacheService` to resolve bridge `deviceId` to the cached ISUP `loginId`.
 - Sends user data through ISUP passthrough to `PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json`.
-- Does not implement face/photo upload yet; `photoSynced` is always `false`.
+- If `photo.contentBase64` is present, uploads the JPEG face after user setup succeeds.
 - Does not log `photo.contentBase64`.
 - Treats the provisioning call as successful only when the SDK transport succeeds, `rawResponse.statusCode == 1`, and `rawResponse.subStatusCode == "ok"`.
+- Supports only `photo.contentType = "image/jpeg"` for face upload.
 
 Conservative default `UserInfo` values:
 
@@ -159,6 +160,37 @@ curl -sS -X PUT 'http://localhost:16233/api/devices/1/users/456' \
   }'
 ```
 
+Sync one user with face:
+
+```shell
+PHOTO_BASE64="$(base64 -w 0 ./face.jpg)"
+
+curl -sS -X PUT 'http://localhost:16233/api/devices/1/users/1001' \
+  -H "Content-Type: application/json" \
+  -H "X-Flow-Bridge-Token: ${FLOW_BRIDGE_TOKEN}" \
+  -d "{
+    \"correlationId\": \"manual-test-1001-face\",
+    \"employee\": {
+      \"personalId\": 123,
+      \"ficha\": 1001,
+      \"employeeNo\": \"1001\",
+      \"name\": \"TEST USER\",
+      \"identification\": \"8-888-888\"
+    },
+    \"access\": {
+      \"beginTime\": \"2020-01-01T00:00:00\",
+      \"endTime\": \"2037-12-31T23:59:59\",
+      \"doorRight\": \"1\",
+      \"planTemplateNo\": \"1\"
+    },
+    \"photo\": {
+      \"name\": \"1001.jpg\",
+      \"contentType\": \"image/jpeg\",
+      \"contentBase64\": \"${PHOTO_BASE64}\"
+    }
+  }"
+```
+
 Successful user response:
 
 ```json
@@ -174,6 +206,26 @@ Successful user response:
     "deleted": false,
     "bridgeStatus": "synced",
     "rawResponse": "{\"statusCode\":1,\"statusString\":\"OK\",\"subStatusCode\":\"ok\"}",
+    "sdkError": null
+  }
+}
+```
+
+Successful user and face response:
+
+```json
+{
+  "code": 200,
+  "msg": "Success",
+  "data": {
+    "correlationId": "manual-test-1001-face",
+    "deviceId": "1",
+    "employeeNo": "1001",
+    "userSynced": true,
+    "photoSynced": true,
+    "deleted": false,
+    "bridgeStatus": "synced",
+    "rawResponse": "{\"userRawResponse\":\"{...}\",\"faceRawResponse\":\"{...}\"}",
     "sdkError": null
   }
 }
@@ -205,6 +257,63 @@ Failed user response:
     "bridgeStatus": "failed",
     "rawResponse": "",
     "sdkError": "10"
+  }
+}
+```
+
+### Upload Face Only
+
+```http
+PUT /api/devices/{deviceId}/users/{employeeNo}/face
+```
+
+Purpose:
+
+- Upload or replace the JPEG face for an existing user.
+- Does not create or update the user record.
+- Uses `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json` through the cached ISUP session.
+
+Feature and auth requirements:
+
+- Requires `X-Flow-Bridge-Token`.
+- Requires `hik.features.provisioning.enabled=true`.
+- Supports only `photo.contentType = "image/jpeg"`.
+- Requires non-empty valid base64 in `photo.contentBase64`.
+
+Upload face for employee `1001`:
+
+```shell
+PHOTO_BASE64="$(base64 -w 0 ./face.jpg)"
+
+curl -sS -X PUT 'http://localhost:16233/api/devices/1/users/1001/face' \
+  -H "Content-Type: application/json" \
+  -H "X-Flow-Bridge-Token: ${FLOW_BRIDGE_TOKEN}" \
+  -d "{
+    \"correlationId\": \"manual-face-1001\",
+    \"photo\": {
+      \"name\": \"1001.jpg\",
+      \"contentType\": \"image/jpeg\",
+      \"contentBase64\": \"${PHOTO_BASE64}\"
+    }
+  }"
+```
+
+Successful face response:
+
+```json
+{
+  "code": 200,
+  "msg": "Success",
+  "data": {
+    "correlationId": "manual-face-1001",
+    "deviceId": "1",
+    "employeeNo": "1001",
+    "userSynced": false,
+    "photoSynced": true,
+    "deleted": false,
+    "bridgeStatus": "synced",
+    "rawResponse": "{\"statusCode\":1,\"statusString\":\"OK\",\"subStatusCode\":\"ok\"}",
+    "sdkError": null
   }
 }
 ```
@@ -245,13 +354,13 @@ Successful verification response:
     "employeeNo": "1001",
     "found": true,
     "bridgeStatus": "synced",
-    "rawResponse": "{\"UserInfoSearch\":{\"numOfMatches\":1,\"UserInfo\":[{\"employeeNo\":\"1001\"}]}}",
+    "rawResponse": "{\"UserInfoSearch\":{\"numOfMatches\":1,\"totalMatches\":1,\"UserInfo\":[{\"employeeNo\":\"1001\",\"name\":\"TEST USER\",\"numOfFace\":1}]}}",
     "sdkError": null
   }
 }
 ```
 
-If the SDK search call succeeds but the requested `employeeNo` is not present in the response, the endpoint returns HTTP `200` with `found = false` and `bridgeStatus = "not_found"`. SDK failures, SDK errors, or empty device responses still return failed responses.
+After face upload, verification should show the same employee with `numOfFace = 1`. If the SDK search call succeeds but the requested `employeeNo` is not present in the response, the endpoint returns HTTP `200` with `found = false` and `bridgeStatus = "not_found"`. SDK failures, SDK errors, or empty device responses still return failed responses.
 
 Success response:
 

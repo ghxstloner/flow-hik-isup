@@ -203,7 +203,8 @@ Current behavior is intentionally conservative:
 - When enabled, user sync sends a no-photo Hikvision `UserInfo` payload through ISUP to `PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json`.
 - User sync returns `bridgeStatus = "synced"` with `userSynced = true` when the SDK transport succeeds and the top-level Hikvision response has `statusCode = 1` and `subStatusCode = "ok"`.
 - User sync returns `bridgeStatus = "failed"` with `userSynced = false`, `rawResponse`, and `sdkError` when the SDK call fails, `sdkError` is present, `rawResponse` is empty, `statusCode` is not `1`, or `subStatusCode` is not `ok`.
-- Photo/face upload is still not implemented; `photoSynced = false`.
+- JPEG face upload is available through user sync when `photo.contentBase64` is present, and through `PUT /api/devices/{deviceId}/users/{employeeNo}/face`.
+- Face upload sends `FaceDataRecord` and `FaceImage` to `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json` through the cached ISUP session.
 - User delete still returns `501` with `bridgeStatus = "not_implemented"`.
 - User verification is available at `GET /api/devices/{deviceId}/users/{employeeNo}/verify` and requires both provisioning and raw ISAPI feature flags. A successful search that does not include the requested employee returns `bridgeStatus = "not_found"` instead of a server error.
 - Raw ISAPI passthrough is implemented only for safe diagnostics:

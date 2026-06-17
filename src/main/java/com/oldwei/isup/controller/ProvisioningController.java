@@ -4,6 +4,7 @@ import com.oldwei.isup.config.HikFeatureProperties;
 import com.oldwei.isup.model.Device;
 import com.oldwei.isup.model.HttpStatus;
 import com.oldwei.isup.model.R;
+import com.oldwei.isup.model.provisioning.FaceSyncRequest;
 import com.oldwei.isup.model.provisioning.ProvisioningResponse;
 import com.oldwei.isup.model.provisioning.ProvisioningStatus;
 import com.oldwei.isup.model.provisioning.RawIsapiRequest;
@@ -65,6 +66,11 @@ public class ProvisioningController {
             return validationError(deviceId, employeeNo, "Path employeeNo must match body.employee.employeeNo.");
         }
 
+        String photoValidationError = request.getPhoto() != null ? provisioningService.validatePhoto(request.getPhoto()) : null;
+        if (photoValidationError != null) {
+            return validationError(deviceId, employeeNo, photoValidationError);
+        }
+
         Optional<Device> deviceOpt = onlineDevice(deviceId);
         if (deviceOpt.isEmpty()) {
             return offline(deviceId, employeeNo);
@@ -76,6 +82,40 @@ public class ProvisioningController {
         }
         if (ProvisioningStatus.FAILED.equals(result.getBridgeStatus())) {
             return response(HttpStatus.ERROR, "Provisioning failed.", result);
+        }
+
+        return ResponseEntity.ok(R.ok(result));
+    }
+
+    @PutMapping("/users/{employeeNo}/face")
+    public ResponseEntity<R<ProvisioningResponse>> syncFace(
+            @PathVariable String deviceId,
+            @PathVariable String employeeNo,
+            @RequestHeader(value = TOKEN_HEADER, required = false) String token,
+            @RequestBody(required = false) FaceSyncRequest request) {
+
+        ResponseEntity<R<ProvisioningResponse>> guard = guardProvisioning(deviceId, employeeNo, token);
+        if (guard != null) {
+            return guard;
+        }
+
+        if (request == null) {
+            return validationError(deviceId, employeeNo, "request body is required.");
+        }
+
+        String photoValidationError = provisioningService.validatePhoto(request.getPhoto());
+        if (photoValidationError != null) {
+            return validationError(deviceId, employeeNo, photoValidationError);
+        }
+
+        Optional<Device> deviceOpt = onlineDevice(deviceId);
+        if (deviceOpt.isEmpty()) {
+            return offline(deviceId, employeeNo);
+        }
+
+        ProvisioningResponse result = provisioningService.syncFace(deviceOpt.get(), employeeNo, request);
+        if (ProvisioningStatus.FAILED.equals(result.getBridgeStatus())) {
+            return response(HttpStatus.ERROR, "Face provisioning failed.", result);
         }
 
         return ResponseEntity.ok(R.ok(result));

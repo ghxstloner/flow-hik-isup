@@ -4,8 +4,10 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.oldwei.isup.model.Device;
+import com.oldwei.isup.model.provisioning.FaceSyncRequest;
 import com.oldwei.isup.model.provisioning.ProvisioningAccess;
 import com.oldwei.isup.model.provisioning.ProvisioningEmployee;
+import com.oldwei.isup.model.provisioning.ProvisioningPhoto;
 import com.oldwei.isup.model.provisioning.ProvisioningResponse;
 import com.oldwei.isup.model.provisioning.ProvisioningStatus;
 import com.oldwei.isup.model.provisioning.UserVerificationResponse;
@@ -17,6 +19,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +34,8 @@ public class HikvisionProvisioningService {
 
     private static final String SET_UP_USER_URL = "PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json";
     private static final String SEARCH_USER_URL = "POST /ISAPI/AccessControl/UserInfo/Search?format=json";
+    private static final String FACE_DATA_RECORD_URL = "POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
+    private static final String JPEG_CONTENT_TYPE = "image/jpeg";
     private static final String DEFAULT_BEGIN_TIME = "2020-01-01T00:00:00";
     private static final String DEFAULT_END_TIME = "2037-12-31T23:59:59";
 
@@ -45,19 +52,54 @@ public class HikvisionProvisioningService {
                 payload
         );
 
-        boolean success = result.isSuccess()
+        boolean userSuccess = result.isSuccess()
                 && StringUtils.isBlank(result.getSdkError())
                 && isSuccessfulIsapiResponse(result.getRawResponse());
+
+        if (!userSuccess || request.getPhoto() == null || StringUtils.isBlank(request.getPhoto().getContentBase64())) {
+            return new ProvisioningResponse(
+                    request.getCorrelationId(),
+                    device.getDeviceId(),
+                    employeeNo,
+                    userSuccess,
+                    false,
+                    false,
+                    userSuccess ? ProvisioningStatus.SYNCED : ProvisioningStatus.FAILED,
+                    result.getRawResponse(),
+                    result.getSdkError()
+            );
+        }
+
+        FaceUploadResult faceResult = uploadFace(device, employeeNo, request.getPhoto());
+        boolean success = faceResult.success();
         return new ProvisioningResponse(
                 request.getCorrelationId(),
                 device.getDeviceId(),
                 employeeNo,
+                true,
                 success,
                 false,
-                false,
                 success ? ProvisioningStatus.SYNCED : ProvisioningStatus.FAILED,
-                result.getRawResponse(),
-                result.getSdkError()
+                combinedRawResponse(result.getRawResponse(), faceResult.rawResponse()),
+                faceResult.sdkError()
+        );
+    }
+
+    public ProvisioningResponse syncFace(Device device, String employeeNo, FaceSyncRequest request) {
+        log.info("Hikvision face sync requested: deviceId={}, employeeNo={}, correlationId={}",
+                device.getDeviceId(), employeeNo, request.getCorrelationId());
+
+        FaceUploadResult result = uploadFace(device, employeeNo, request.getPhoto());
+        return new ProvisioningResponse(
+                request.getCorrelationId(),
+                device.getDeviceId(),
+                employeeNo,
+                false,
+                result.success(),
+                false,
+                result.success() ? ProvisioningStatus.SYNCED : ProvisioningStatus.FAILED,
+                result.rawResponse(),
+                result.sdkError()
         );
     }
 
@@ -150,6 +192,91 @@ public class HikvisionProvisioningService {
         return JSON.toJSONString(payload);
     }
 
+    public String validatePhoto(ProvisioningPhoto photo) {
+        if (photo == null) {
+            return "photo is required.";
+        }
+        if (!StringUtils.equalsIgnoreCase(JPEG_CONTENT_TYPE, StringUtils.trim(photo.getContentType()))) {
+            return "photo.contentType must be image/jpeg.";
+        }
+        if (StringUtils.isBlank(photo.getContentBase64())) {
+            return "photo.contentBase64 is required.";
+        }
+        try {
+            byte[] bytes = decodePhoto(photo);
+            if (bytes.length == 0) {
+                return "photo.contentBase64 decoded bytes must be non-empty.";
+            }
+        } catch (IllegalArgumentException e) {
+            return "photo.contentBase64 must be valid base64.";
+        }
+        return null;
+    }
+
+    private FaceUploadResult uploadFace(Device device, String employeeNo, ProvisioningPhoto photo) {
+        String validationError = validatePhoto(photo);
+        if (validationError != null) {
+            return new FaceUploadResult(false, "", validationError);
+        }
+
+        byte[] imageBytes = decodePhoto(photo);
+        String boundary = "----flow-hik-isup-" + UUID.randomUUID();
+        byte[] multipartBody = buildFaceMultipartBody(employeeNo, imageBytes, boundary);
+
+        log.info("Hikvision face upload requested: deviceId={}, employeeNo={}, photoName={}, contentType={}, bytes={}",
+                device.getDeviceId(), employeeNo, photo.getName(), photo.getContentType(), imageBytes.length);
+
+        CmsUtil.IsapiPassThroughResult result = cmsUtil.passThroughBytesWithStatus(
+                device.getLoginId(),
+                FACE_DATA_RECORD_URL,
+                multipartBody
+        );
+
+        boolean success = result.isSuccess()
+                && StringUtils.isBlank(result.getSdkError())
+                && isSuccessfulIsapiResponse(result.getRawResponse());
+        return new FaceUploadResult(success, result.getRawResponse(), result.getSdkError());
+    }
+
+    private byte[] decodePhoto(ProvisioningPhoto photo) {
+        return Base64.getDecoder().decode(photo.getContentBase64());
+    }
+
+    private byte[] buildFaceMultipartBody(String employeeNo, byte[] imageBytes, String boundary) {
+        Map<String, Object> faceDataRecord = new LinkedHashMap<>();
+        faceDataRecord.put("employeeNo", employeeNo);
+        faceDataRecord.put("faceLibType", "blackFace");
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("FaceDataRecord", faceDataRecord);
+        byte[] faceDataJson = JSON.toJSONString(payload).getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeAscii(output, "--" + boundary + "\r\n");
+        writeAscii(output, "Content-Disposition: form-data; name=\"FaceDataRecord\"; filename=\"faceDataRecord.json\"\r\n");
+        writeAscii(output, "Content-Type: application/json\r\n\r\n");
+        output.writeBytes(faceDataJson);
+        writeAscii(output, "\r\n");
+        writeAscii(output, "--" + boundary + "\r\n");
+        writeAscii(output, "Content-Disposition: form-data; name=\"FaceImage\"; filename=\"face.jpg\"\r\n");
+        writeAscii(output, "Content-Type: image/jpeg\r\n\r\n");
+        output.writeBytes(imageBytes);
+        writeAscii(output, "\r\n");
+        writeAscii(output, "--" + boundary + "--\r\n");
+        return output.toByteArray();
+    }
+
+    private void writeAscii(ByteArrayOutputStream output, String value) {
+        output.writeBytes(value.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    private String combinedRawResponse(String userRawResponse, String faceRawResponse) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("userRawResponse", userRawResponse);
+        payload.put("faceRawResponse", faceRawResponse);
+        return JSON.toJSONString(payload);
+    }
+
     private String valueOrDefault(String value, String defaultValue) {
         return StringUtils.isNotBlank(value) ? value : defaultValue;
     }
@@ -199,5 +326,8 @@ public class HikvisionProvisioningService {
 
         Object rawEmployeeNo = user.get("employeeNo");
         return rawEmployeeNo != null && StringUtils.equals(String.valueOf(rawEmployeeNo).trim(), employeeNo.trim());
+    }
+
+    private record FaceUploadResult(boolean success, String rawResponse, String sdkError) {
     }
 }

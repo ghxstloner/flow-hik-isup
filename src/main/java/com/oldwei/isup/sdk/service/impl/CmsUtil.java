@@ -147,6 +147,13 @@ public class CmsUtil {
     }
 
     public IsapiPassThroughResult passThroughWithStatus(int loginID, String reqUrl, String reqContent) {
+        byte[] reqBytes = reqContent != null && !reqContent.trim().isEmpty()
+                ? reqContent.getBytes(StandardCharsets.UTF_8)
+                : null;
+        return passThroughBytesWithStatus(loginID, reqUrl, reqBytes);
+    }
+
+    public IsapiPassThroughResult passThroughBytesWithStatus(int loginID, String reqUrl, byte[] reqContent) {
         if (reqUrl == null) {
             throw new RuntimeException("示例代码中修改的透传的请求地址为null");
         }
@@ -160,13 +167,11 @@ public class CmsUtil {
         m_struParam.pRequestUrl = ptrurlInBuffer.getPointer();
         m_struParam.dwRequestUrlLen = reqUrl.length();
 
-        if (reqContent != null && !reqContent.trim().isEmpty()) {
-            byte[] byInbuffer;
-            byInbuffer = reqContent.getBytes(StandardCharsets.UTF_8);
-            int iInBufLen = byInbuffer.length;
+        if (reqContent != null && reqContent.length > 0) {
+            int iInBufLen = reqContent.length;
             BYTE_ARRAY ptrInBuffer = new BYTE_ARRAY(iInBufLen);
             ptrInBuffer.read();
-            System.arraycopy(byInbuffer, 0, ptrInBuffer.byValue, 0, iInBufLen);
+            System.arraycopy(reqContent, 0, ptrInBuffer.byValue, 0, iInBufLen);
             ptrInBuffer.write();
             m_struParam.dwInSize = iInBufLen;
             m_struParam.pInBuffer = ptrInBuffer.getPointer();
