@@ -39,6 +39,79 @@ Compile verification:
 - `mvn -q -DskipTests compile` could not be run because `mvn` is not available on PATH in this shell.
 - Static inspection did not show a registration-flow compile issue, but actual compile should be run on a machine/container with Maven installed.
 
+## Attendance event passthrough (Laravel -> bridge -> device)
+
+### Why this endpoint exists
+
+The pre-existing bridge only exposed `POST /api/devices/{deviceId}/isapi`,
+whose `RawIsapiDiagnosticService.isAllowed()` whitelist deliberately rejects
+every non-GET path and every path that is not one of the
+`deviceInfo` / `UserInfo/capabilities` / `FDLib*` diagnostics. That left
+Laravel unable to poll attendance events through the bridge for devices that
+sit behind NAT and are registered via ISUP/EHome (and therefore cannot be
+reached by HTTP Digest auth from the Laravel server).
+
+To close that gap without loosening the read-only diagnostic guard, the bridge
+now ships a dedicated attendance-event search endpoint that performs the
+ISAPI `AcsEventCond` search through the existing `passThroughBytesWithStatus`
+channel.
+
+### New surface
+
+- Java: `AttendanceController#searchEvents`
+  - Route: `POST /api/devices/{deviceId}/events/search`
+  - Auth: `X-Flow-Bridge-Token` (same shared token as provisioning/diagnostics)
+  - Feature flag: `hik.features.attendance-events.enabled`
+    (`FLOW_HIK_ATTENDANCE_EVENTS_ENABLED`)
+  - Body: `AttendanceEventsSearchRequest` - `startTime` and `endTime`
+    (ISO-8601) are required; `searchID`, `searchResultPosition`, `maxResults`,
+    `major`, `minor` are optional (defaults filled in by
+    `AttendanceEventsSearchService`).
+  - Response: `R<AttendanceEventsSearchResponse>` with `eventsJson` carrying
+    the raw `{ "AcsEvent": { ... } }` payload from the device, plus `status`,
+    `sdkError`, `rawResponseLength`, and `searchID`.
+
+- Wire format the bridge forwards to the device:
+
+  ```json
+  {
+    "AcsEventCond": {
+      "searchID": "laravel-<uuid>",
+      "searchResultPosition": 0,
+      "maxResults": 30,
+      "major": 0,
+      "minor": 0,
+      "startTime": "2026-06-17T00:00:00-05:00",
+      "endTime": "2026-06-17T23:59:59-05:00"
+    }
+  }
+  ```
+
+  Sent via `passThroughBytesWithStatus(loginId, "POST /ISAPI/AccessControl/AcsEvent?format=json", bytes, 15000)`.
+
+### Turn it on
+
+`application-dev.yml` ships the flag disabled by default; flip it on:
+
+```dotenv
+FLOW_HIK_ATTENDANCE_EVENTS_ENABLED=true
+```
+
+### Device online guard
+
+Same predicate as provisioning: `DeviceCacheService.getByDeviceId(deviceId)`
+must return a device with `isOnline == 1` and `loginId > -1`. Offline devices
+yield HTTP 409 with `status=failed`, `sdkError=null`.
+
+### What Laravel does with the payload
+
+Laravel's `HikvisionAttendanceService::pollEvents()` consumes the bridge
+through `BridgeIsapiClient` (selected when the device row has
+`TRANSPORT_MODE='bridge'`) and feeds the `eventsJson` straight into the
+existing `IsapiResponseParser` - so `InfoList`, `responseStatusStrg`, and
+`totalMatches` extraction is identical to the Digest path. Marks land in the
+existing `reloj_marcaciones` table; no new mark/attendance tables were added.
+
 ## Laravel Patterns Found
 
 Laravel backend inspected at `C:\wamp64\www\aitsa_rrhh\flow`.

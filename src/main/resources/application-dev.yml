@@ -61,6 +61,11 @@ hik:
       enabled: ${FLOW_HIK_PLAYBACK_ENABLED:false}
     channel-sync:
       enabled: ${FLOW_HIK_CHANNEL_SYNC_ENABLED:false}
+    # Attendance ACS event search (POST /api/devices/{deviceId}/events/search).
+    # Lets Laravel poll /ISAPI/AccessControl/AcsEvent through the bridge for
+    # devices behind NAT/EHome. Keep it disabled until Laravel is wired in.
+    attendance-events:
+      enabled: ${FLOW_HIK_ATTENDANCE_EVENTS_ENABLED:false}
 
   platform:
     pushAddress: ${FLOW_APP_PUSH_ADDRESS:http://127.0.0.1:9080/iot/event/HK/callback}
