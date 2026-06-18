@@ -49,20 +49,29 @@ public class AttendanceController {
     public ResponseEntity<R<AttendanceEventsSearchResponse>> searchEvents(
             @PathVariable String deviceId,
             @RequestHeader(value = TOKEN_HEADER, required = false) String token,
-            @RequestBody(required = false) AttendanceEventsSearchRequest request) {
+            @RequestBody(required = false) java.util.Map<String, Object> body) {
 
         if (!bridgeAuthService.isAuthorized(token)) {
-            return response(HttpStatus.UNAUTHORIZED, "Unauthorized.", empty(deviceId, request));
+            return response(HttpStatus.UNAUTHORIZED, "Unauthorized.", empty(deviceId, null));
         }
 
         if (!hikFeatureProperties.getAttendanceEvents().isEnabled()) {
             return response(HttpStatus.SERVICE_UNAVAILABLE,
                     "Attendance events search endpoint is disabled.",
-                    empty(deviceId, request));
+                    empty(deviceId, null));
         }
 
-        if (request == null || request.getStartTime() == null || request.getEndTime() == null
-                || request.getStartTime().isBlank() || request.getEndTime().isBlank()) {
+        // Normalise the incoming body so both shapes are accepted:
+        //   1) Documented flat DTO  :  { startTime, endTime, maxResults, ... }
+        //   2) Raw Hikvision wrapper:  { "AcsEventCond": { startTime, endTime, ... } }
+        // The flat DTO is what AttendanceEventsSearchRequest binds to, so we
+        // only have to unwrap the legacy shape when present.
+        java.util.Map<String, Object> flat = normaliseBody(body);
+
+        AttendanceEventsSearchRequest request = toRequest(flat);
+
+        if (request.getStartTime() == null || request.getStartTime().isBlank()
+                || request.getEndTime() == null || request.getEndTime().isBlank()) {
             return response(HttpStatus.BAD_REQUEST,
                     "startTime and endTime are required (ISO-8601).",
                     empty(deviceId, request));
@@ -73,12 +82,72 @@ public class AttendanceController {
             return response(HttpStatus.CONFLICT, "Device is not online.", empty(deviceId, request));
         }
 
-        AttendanceEventsSearchResponse body = eventsSearchService.search(deviceOpt.get(), request);
+        AttendanceEventsSearchResponse rsp = eventsSearchService.search(deviceOpt.get(), request);
 
-        if (AttendanceEventsSearchService.STATUS_FAILED.equals(body.getStatus())) {
-            return response(HttpStatus.ERROR, "ACS event search passthrough failed.", body);
+        if (AttendanceEventsSearchService.STATUS_FAILED.equals(rsp.getStatus())) {
+            return response(HttpStatus.ERROR, "ACS event search passthrough failed.", rsp);
         }
-        return ResponseEntity.ok(R.ok(body));
+        return ResponseEntity.ok(R.ok(rsp));
+    }
+
+    /**
+     * Unwrap an eventual {@code "AcsEventCond"} wrapper so both body shapes
+     * are accepted. Returns the same map if the body is already flat or null.
+     */
+    @SuppressWarnings("unchecked")
+    private java.util.Map<String, Object> normaliseBody(java.util.Map<String, Object> body) {
+        if (body == null) {
+            return new java.util.LinkedHashMap<>();
+        }
+        Object wrapped = body.get("AcsEventCond");
+        if (wrapped instanceof java.util.Map<?, ?> cond) {
+            // Rebuild as Map<String,Object> for safe typed access downstream.
+            java.util.Map<String, Object> flat = new java.util.LinkedHashMap<>();
+            for (java.util.Map.Entry<?, ?> e : cond.entrySet()) {
+                flat.put(String.valueOf(e.getKey()), e.getValue());
+            }
+            log.debug("Unwrapped legacy AcsEventCond body for events/search.");
+            return flat;
+        }
+        return body;
+    }
+
+    /**
+     * Convert the normalised flat map into the typed request, filling in
+     * sensible defaults so Laravel callers can omit every field except the
+     * mandatory startTime / endTime.
+     */
+    private AttendanceEventsSearchRequest toRequest(java.util.Map<String, Object> flat) {
+        AttendanceEventsSearchRequest request = new AttendanceEventsSearchRequest();
+        request.setRaw(flat);
+
+        request.setSearchID(asString(flat.get("searchID"),
+                "flow-bridge-" + java.util.UUID.randomUUID()));
+        request.setSearchResultPosition(asInt(flat.get("searchResultPosition"), 0));
+        request.setMaxResults(asInt(flat.get("maxResults"), 30));
+        request.setMajor(asInt(flat.get("major"), 0));
+        request.setMinor(asInt(flat.get("minor"), 0));
+        request.setStartTime(asString(flat.get("startTime"), null));
+        request.setEndTime(asString(flat.get("endTime"), null));
+        return request;
+    }
+
+    private String asString(Object v, String def) {
+        return (v == null || String.valueOf(v).isBlank()) ? def : String.valueOf(v);
+    }
+
+    private Integer asInt(Object v, Integer def) {
+        if (v == null) {
+            return def;
+        }
+        if (v instanceof Number) {
+            return ((Number) v).intValue();
+        }
+        try {
+            return Integer.parseInt(String.valueOf(v).trim());
+        } catch (NumberFormatException e) {
+            return def;
+        }
     }
 
     private Optional<Device> onlineDevice(String deviceId) {
