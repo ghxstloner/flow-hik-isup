@@ -1,6 +1,5 @@
 package com.oldwei.isup.model.provisioning;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -51,9 +50,41 @@ public class ProvisioningResponse {
     private String photoSubStatusCode;
 
     /**
+     * Full 11-arg constructor surfaced explicitly (NOT via
+     * {@code @AllArgsConstructor}) so the legacy 9-arg constructor below can
+     * delegate here cleanly. The two new face-error fields are the only
+     * additions over the historical envelope.
+     */
+    public ProvisioningResponse(
+            String correlationId,
+            String deviceId,
+            String employeeNo,
+            Boolean userSynced,
+            Boolean photoSynced,
+            Boolean deleted,
+            String bridgeStatus,
+            String rawResponse,
+            String sdkError,
+            String photoErrorCode,
+            String photoSubStatusCode) {
+        this.correlationId = correlationId;
+        this.deviceId = deviceId;
+        this.employeeNo = employeeNo;
+        this.userSynced = userSynced;
+        this.photoSynced = photoSynced;
+        this.deleted = deleted;
+        this.bridgeStatus = bridgeStatus;
+        this.rawResponse = rawResponse;
+        this.sdkError = sdkError;
+        this.photoErrorCode = photoErrorCode;
+        this.photoSubStatusCode = photoSubStatusCode;
+    }
+
+    /**
      * Backwards-compatible 9-arg constructor. Leaves the structured photo
-     * error fields null. Preserved so every existing call site keeps compiling
-     * without churn.
+     * error fields null by delegating to the 11-arg form. Preserved so every
+     * existing call site keeps compiling without churn (controller
+     * {@code baseResponse}, the {@code deleteUser} stub, etc.).
      */
     public ProvisioningResponse(
             String correlationId,
