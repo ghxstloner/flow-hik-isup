@@ -362,33 +362,81 @@ public class HikvisionProvisioningService {
         // The most common reason a create fails on an already-provisioned
         // employeeNo is that the device already holds a face for this FPID
         // and returns `deviceUserAlreadyExistFace`. The Hikvision FDLib API
-        // is NOT idempotent on POST, so we have to DELETE the existing face
-        // for (FDID, FPID) and re-POST once. Bounded to a single retry -
-        // no infinite loop.
+        // is NOT idempotent on POST, so we have to evict the existing face
+        // for (FDID, FPID) via the DS-K1Txxxx-correct
+        // `PUT /ISAPI/Intelligent/FDLib/FDSearch/Delete` path and re-POST
+        // once. Bounded to a single retry - no infinite loop.
         if (PHOTO_ERR_FACE_ALREADY_EXISTS.equals(upload.photoErrorCode())) {
             String fdid = provisioningProperties.getFdid();
             log.info("Face already exists for employeeNo; attempting delete+recreate: deviceId={}, employeeNo={}, FDID={}, FPID={}",
                     device.getDeviceId(), employeeNo, fdid, employeeNo);
 
             FaceDeleteResult delete = deleteExistingFace(device, fdid, employeeNo);
-            if (delete.transportOk()) {
-                // DELETE returns 200 even for "no such FPID"; re-POST once.
+            // Only re-POST when the device explicitly confirmed the delete
+            // (statusCode=1 / subStatusCode=ok). A bare transportOk is NOT
+            // enough: the DS-K1T321MFWX answered the old DELETE verb with
+            // HTTP-200-but-body statusCode=4 `notSupport`, and re-POSTing
+            // immediately would reproduce the same `deviceUserAlreadyExistFace`.
+            // Requiring deviceOk both matches the ISAPI contract and keeps the
+            // retry bounded to ONE attempt for any device that refuses the
+            // delete path.
+            if (delete.deviceOk()) {
+                // Device confirmed the FPID is gone - re-enroll the same bytes.
                 FaceUploadResult retry = mode.isFaceUrlMode()
                         ? uploadFaceByUrl(device, employeeNo, face, mode)
                         : uploadFaceByMultipart(device, employeeNo, face, mode);
                 if (retry.success()) {
-                    log.info("Face upsert succeeded on retry: deviceId={}, employeeNo={}, deleteTransportOk={}, deleteRawResponse={}",
-                            device.getDeviceId(), employeeNo, delete.transportOk(), truncate(delete.rawResponse));
+                    log.info("Face upsert succeeded on retry: deviceId={}, employeeNo={}, deleteDeviceOk={}, deleteStatusCode={}, deleteRawResponse={}",
+                            device.getDeviceId(), employeeNo, delete.deviceOk(), delete.statusCode(), truncate(delete.rawResponse()));
                     return retry;
                 }
                 // Retry still failed - report the retry's error code, but note
-                // that an upsert was attempted (carry the original and retry
-                // raw responses so PHP can diagnose).
+                // that an upsert was attempted (carry the original + delete +
+                // retry raw responses so PHP can diagnose).
                 return retry.withReattempted(upload.rawResponse(), delete);
             }
-            // DELETE itself failed at the transport layer - surface that.
-            log.warn("Face upsert aborted: delete-by-FPID transport failed: deviceId={}, employeeNo={}, sdkError={}, rawResponse={}",
-                    device.getDeviceId(), employeeNo, delete.sdkError(), truncate(delete.rawResponse()));
+            // Delete was not supported by the firmware (statusCode=4 /
+            // notSupport) or failed at the transport layer. Do NOT re-POST -
+            // the existing face is still there and FaceDataRecord would just
+            // return `deviceUserAlreadyExistFace` again. Still return PARTIAL
+            // with photoErrorCode=FACE_ALREADY_EXISTS /
+            // photoSubStatusCode=deviceUserAlreadyExistFace (from the ORIGINAL
+            // POST), but ALSO splice the delete rejection into the final
+            // rawResponse so PHP sees BOTH the POST body and the DELETE
+            // notSupport body without a second call. Useful for an operator
+            // who wants to chase this in the device admin UI.
+            log.warn("Face upsert aborted: face-delete did not confirm: deviceId={}, employeeNo={}, transportOk={}, deviceOk={}, statusCode={}, statusString={}, subStatusCode={}, errorCode={}, errorMsg={}, sdkError={}, rawResponse={}",
+                    device.getDeviceId(), employeeNo,
+                    delete.transportOk(), delete.deviceOk(),
+                    delete.statusCode(), delete.statusString(), delete.subStatusCode(),
+                    delete.errorCode(), delete.errorMsg(),
+                    delete.sdkError(), truncate(delete.rawResponse()));
+
+            // Splice the delete-rejection details onto the upload result so
+            // the composed rawResponse survives all the way to Laravel.
+            JSONObject deleteStatus = new JSONObject();
+            deleteStatus.put("statusCode", delete.statusCode());
+            deleteStatus.put("statusString", delete.statusString());
+            deleteStatus.put("subStatusCode", delete.subStatusCode());
+            deleteStatus.put("errorCode", delete.errorCode());
+            deleteStatus.put("errorMsg", delete.errorMsg());
+            deleteStatus.put("deviceOk", delete.deviceOk());
+            deleteStatus.put("transportOk", delete.transportOk());
+            deleteStatus.put("sdkError", delete.sdkError());
+            deleteStatus.put("rawResponse", delete.rawResponse());
+            JSONObject composite = new JSONObject();
+            composite.put("originalFaceDataRecordRawResponse", upload.rawResponse());
+            composite.put("deleteStatus", deleteStatus);
+            upload = new FaceUploadResult(
+                    upload.success(),
+                    composite.toJSONString(),
+                    upload.sdkError(),
+                    // Keep the ORIGINAL POST error code/subCode so PHP branches
+                    // on FACE_ALREADY_EXISTS first; `deleteStatus` exposes the
+                    // notSupport details for human diagnosis.
+                    upload.photoErrorCode(),
+                    upload.photoSubStatusCode()
+            );
         }
 
         // SubpicAnalysisModelingError / any other device-rejected (or pure
@@ -723,38 +771,108 @@ public class HikvisionProvisioningService {
     }
 
     /**
-     * Deletes an existing face record from the configured FDLib by FDID+FPID.
-     * Used by the {@code uploadFace} upsert path when a POST returns
-     * {@code deviceUserAlreadyExistFace} - we have to evict the old face first
-     * so a fresh POST can re-enroll the (potentially identical) FPID.
+     * Evicts an existing face record from the configured FDLib so a follow-up
+     * {@code POST /ISAPI/Intelligent/FDLib/FaceDataRecord} can re-enroll the
+     * same {@code FPID}. Called by the {@code uploadFace} upsert path when a
+     * create returns {@code deviceUserAlreadyExistFace}.
      *
-     * <p>ISAPI contract:
-     * {@code DELETE /ISAPI/Intelligent/FDLib/FDLib?FDID={fdid}&amp;FPID={fpid}}
-     * with empty body. The pass-through layer accepts the DELETE verb (see
-     * {@link CmsUtil#passThroughBytesWithStatus} javadoc); we pass a null
-     * payload exactly like a GET.
+     * <p><b>Why PUT FDSearch/Delete and not {@code DELETE /FDLib?FDID&FPID}:</b>
+     * the DS-K1T321MFWX rejects the bare-DELETE verb with HTTP-200-but-body
+     * {@code statusCode=4 / statusString="Invalid Operation" /
+     * subStatusCode="notSupport" / errorCode=1073741825}. The firmware's real
+     * per-FPID removal path is the search-delete form documented for the
+     * DS-K1Txxxx access-control family:
+     * <pre>{@code
+     *   PUT /ISAPI/Intelligent/FDLib/FDSearch/Delete?format=json&FDID={fdid}&faceLibType={faceLibType}
+     *   Content-Type: application/json
+     *   {"FPID":[{"value":"<employeeNo>"}]}
+     * }</pre>
+     * A device-confirmed delete returns {@code statusCode=1 /
+     * subStatusCode="ok"}; only that shape gates the re-POST (see
+     * {@link FaceDeleteResult#deviceOk()}), so a {@code notSupport} response
+     * on the PUT (or any other rejection) leaves the original face untouched
+     * instead of cycling the POST.
      *
-     * <p>This is <strong>best effort</strong>: Hikvision returns 200 even for a
-     * no-op delete on an absent FPID, so callers always proceed to re-POST
-     * after {@code transportOk=true}. The delete itself is idempotent.
+     * @param fdid FDLib id (default "1", from {@code hik.provisioning.fdid})
+     * @param fpid face id (= employeeNo, bound to the access-control user)
      */
     private FaceDeleteResult deleteExistingFace(Device device, String fdid, String fpid) {
-        String url = "DELETE /ISAPI/Intelligent/FDLib/FDLib?FDID=" + fdid + "&FPID=" + fpid;
+        String faceLibType = provisioningProperties.getFaceLibType();
+        String url = "PUT /ISAPI/Intelligent/FDLib/FDSearch/Delete?format=json"
+                + "&FDID=" + fdid + "&faceLibType=" + faceLibType;
+        // ISAPI contract for DS-K1Txxxx: an array of single-key {"value":..}
+        // objects under "FPID". One FPID per call keeps the retry targeted to
+        // the employeeNo we are upserting.
+        JSONObject fpidItem = new JSONObject();
+        fpidItem.put("value", fpid);
+        JSONArray fpidList = new JSONArray();
+        fpidList.add(fpidItem);
+        JSONObject body = new JSONObject();
+        body.put("FPID", fpidList);
+        byte[] bodyBytes = body.toJSONString().getBytes(StandardCharsets.UTF_8);
+
         CmsUtil.IsapiPassThroughResult result = cmsUtil.passThroughBytesWithStatus(
                 device.getLoginId(),
                 url,
-                null,
+                bodyBytes,
                 FACE_PASSTHROUGH_TIMEOUT_MS
         );
-        log.info("Face delete-by-FPID: deviceId={}, fdid={}, fpid={}, url={}, transportOk={}, sdkError={}, rawResponse={}",
-                device.getDeviceId(), fdid, fpid, url,
-                result.isSuccess(),
+        String raw = result.getRawResponse();
+        boolean transportOk = result.isSuccess() && StringUtils.isBlank(result.getSdkError());
+        Integer statusCode = null;
+        String statusString = null;
+        String subStatusCode = null;
+        String errorCode = null;
+        String errorMsg = null;
+        boolean deviceOk = false;
+        if (transportOk && StringUtils.isNotBlank(raw)) {
+            try {
+                JSONObject resp = JSON.parseObject(raw);
+                statusCode = resp.getInteger("statusCode");
+                statusString = resp.getString("statusString");
+                subStatusCode = resp.getString("subStatusCode");
+                errorCode = resp.getString("errorCode");
+                errorMsg = resp.getString("errorMsg");
+                // Mirror the upload-path success gate for cross-shape parity.
+                deviceOk = Integer.valueOf(1).equals(statusCode)
+                        && StringUtils.equalsIgnoreCase("ok", subStatusCode);
+            } catch (Exception parseEx) {
+                // Body was not JSON - cannot confirm device-level success.
+                log.warn("Face delete-by-FPID response was not parseable JSON: deviceId={}, fpid={}, rawResponse={}",
+                        device.getDeviceId(), fpid, truncate(raw));
+            }
+        }
+
+        log.info("Face delete-by-FPID: deviceId={}, fdid={}, faceLibType={}, fpid={}, method=PUT, url={}, body={}, transportOk={}, deviceOk={}, statusCode={}, statusString={}, subStatusCode={}, errorCode={}, errorMsg={}, sdkError={}, rawResponse={}",
+                device.getDeviceId(), fdid, faceLibType, fpid, url,
+                body.toJSONString(),
+                transportOk, deviceOk,
+                statusCode, statusString, subStatusCode, errorCode, errorMsg,
                 result.getSdkError(),
-                truncate(result.getRawResponse()));
-        return new FaceDeleteResult(result.isSuccess(), result.getRawResponse(), result.getSdkError());
+                truncate(raw));
+        return new FaceDeleteResult(transportOk, deviceOk, raw, result.getSdkError(),
+                statusCode, statusString, subStatusCode, errorCode, errorMsg);
     }
 
-    private record FaceDeleteResult(boolean transportOk, String rawResponse, String sdkError) {
+    /**
+     * Outcome of a {@link #deleteExistingFace} call. Carries both transport
+     * health ( {@code transportOk} = SDK call returned without error) and the
+     * device-level delete confirmation ( {@code deviceOk} =
+     * statusCode==1 &amp;&amp; subStatusCode=="ok"). Only {@code deviceOk}
+     * authorizes the re-POST, because some DS-K1Txxxx firmware returns HTTP 200
+     * with a body of {@code statusCode=4 / notSupport} for verb mismatches;
+     * treating that as success would re-fire FaceDataRecord against the stale
+     * FPID and reproduce {@code deviceUserAlreadyExistFace}.
+     */
+    private record FaceDeleteResult(boolean transportOk,
+                                    boolean deviceOk,
+                                    String rawResponse,
+                                    String sdkError,
+                                    Integer statusCode,
+                                    String statusString,
+                                    String subStatusCode,
+                                    String errorCode,
+                                    String errorMsg) {
     }
 
     private boolean userSearchContainsEmployee(String rawResponse, String employeeNo) {
@@ -817,19 +935,32 @@ public class HikvisionProvisioningService {
 
         /**
          * Builds a result that signals "the face upload ultimately FAILED, but
-         * an upsert was attempted on the way here". The retry's own error code
-         * wins (it's the most recent), but the carried {@code rawResponse} is
-         * wrapped so an operator can see both the original rejection AND the
-         * delete result that should have cleared the FPID.
+         * an upsert was attempted on the way here". The retry's own error
+         * code wins (it's the most recent), and {@code rawResponse} is wrapped
+         * so an operator can see the original POST rejection, the confirmed
+         * FPID delete result, and the retry POST response in one JSON object.
+         * The structured delete fields (statusCode/statusString/
+         * subStatusCode/errorCode/errorMsg) are surfaced in a sibling
+         * `deleteStatus` sub-object so PHP can branch on, say, a `notSupport`
+         * delete without re-parsing the raw bodies.
          */
         FaceUploadResult withReattempted(String firstAttemptRaw, FaceDeleteResult deleteResult) {
-            String composed = "{\"firstAttemptRawResponse\":" + JSON.toJSONString(firstAttemptRaw)
-                    + ",\"deleteRawResponse\":" + JSON.toJSONString(deleteResult.rawResponse())
-                    + ",\"retryRawResponse\":" + JSON.toJSONString(this.rawResponse)
-                    + "}";
+            JSONObject deleteStatus = new JSONObject();
+            deleteStatus.put("statusCode", deleteResult.statusCode());
+            deleteStatus.put("statusString", deleteResult.statusString());
+            deleteStatus.put("subStatusCode", deleteResult.subStatusCode());
+            deleteStatus.put("errorCode", deleteResult.errorCode());
+            deleteStatus.put("errorMsg", deleteResult.errorMsg());
+            deleteStatus.put("deviceOk", deleteResult.deviceOk());
+
+            JSONObject composedJson = new JSONObject();
+            composedJson.put("firstAttemptRawResponse", firstAttemptRaw);
+            composedJson.put("deleteRawResponse", deleteResult.rawResponse());
+            composedJson.put("deleteStatus", deleteStatus);
+            composedJson.put("retryRawResponse", this.rawResponse);
             return new FaceUploadResult(
                     false,
-                    composed,
+                    composedJson.toJSONString(),
                     this.sdkError,
                     this.photoErrorCode,
                     this.photoSubStatusCode
