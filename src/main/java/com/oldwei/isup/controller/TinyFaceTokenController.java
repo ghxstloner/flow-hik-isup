@@ -39,12 +39,13 @@ public class TinyFaceTokenController {
     public ResponseEntity<byte[]> fetchFace(@PathVariable String token) {
         FaceUrlStore.FaceEntry entry = faceUrlStore.consume(token);
         if (entry == null || entry.imageBytes() == null || entry.imageBytes().length == 0) {
-            log.warn("Face token not found / already consumed / expired: tokenPrefix={}...",
+            log.warn("Face token not found / fully consumed / expired: tokenPrefix={}...",
                     token == null ? "" : token.substring(0, Math.min(6, token.length())));
             return ResponseEntity.notFound().build();
         }
-        log.info("Face token served: employeeNo={}, bytes={}",
-                entry.employeeNo(), entry.imageBytes().length);
+        log.info("Face token served: employeeNo={}, bytes={}, remainingReads={}",
+                entry.employeeNo(), entry.imageBytes().length,
+                Math.max(entry.remainingReads().get(), 0));
         return ResponseEntity.ok()
                 .contentType(IMAGE_JPEG)
                 .cacheControl(CacheControl.maxAge(0, TimeUnit.SECONDS).mustRevalidate().cachePrivate())

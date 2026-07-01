@@ -14,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * In-memory store for one-shot face-image URLs used by the URL-based Hikvision
@@ -48,6 +49,18 @@ import java.util.concurrent.TimeUnit;
 public class FaceUrlStore {
 
     static final long TTL_SECONDS = 300;
+    /**
+     * How many device-side HTTP GETs a single token can satisfy before it is
+     * removed from the store. The Hikvision face-url enrollment flow can fire
+     * multiple fetches against {@code faceUrl} within one logical upload
+     * (a TCP/preflight probe plus the real body GET, and occasional re-GETs on
+     * slow links). A one-shot token turned those retries into
+     * "Face token not found / already consumed / expired" 404s and broke the
+     * upload. We allow up to {@code MAX_READS} successful consumptions within
+     * the existing {@link #TTL_SECONDS} window instead of self-destructing on
+     * the first read. The TTL/scheduler cleanup is unchanged.
+     */
+    static final int MAX_READS = 3;
     private static final int TOKEN_BYTES = 24; // 192 bits -> 32 url-safe base64 chars
 
     private final SecureRandom random = new SecureRandom();
@@ -86,33 +99,44 @@ public class FaceUrlStore {
         String token = newToken();
         String pathPrefix = normalizePathPrefix();
         Instant expiresAt = Instant.now().plusSeconds(TTL_SECONDS);
-        entries.put(token, new FaceEntry(employeeNo, imageBytes, expiresAt));
+        entries.put(token, new FaceEntry(employeeNo, imageBytes, expiresAt, new AtomicInteger(MAX_READS)));
         String absoluteUrl = baseUrl() + pathPrefix + token;
-        log.info("Face URL published: employeeNo={}, tokenPrefix={}..., ttlSeconds={}, bytes={}, url={}",
+        log.info("Face URL published: employeeNo={}, tokenPrefix={}..., ttlSeconds={}, maxReads={}, bytes={}, url={}",
                 employeeNo,
                 token.substring(0, Math.min(6, token.length())),
                 TTL_SECONDS,
+                MAX_READS,
                 imageBytes.length,
                 absoluteUrl);
         return absoluteUrl;
     }
 
     /**
-     * Returns and consumes the JPEG for the given token. One-shot: a second
-     * fetch with the same token returns {@code null}.
+     * Returns the JPEG for the given token and decrements its remaining-read
+     * budget. The token survives up to {@link #MAX_READS} consumptions inside
+     * the TTL window; only the last allowed read (or an expired entry) removes
+     * it from the store. This lets the device issue its normal preflight +
+     * body GETs (and one slow-link retry) against the same {@code faceUrl}
+     * without hitting a 404.
+     *
+     * <p>Atomic via {@link ConcurrentHashMap#computeIfPresent}; the response is
+     * captured into an array cell so the caller always gets the bytes for the
+     * read being acknowledged, including the final one.
      */
     public FaceEntry consume(String token) {
         if (token == null) {
             return null;
         }
-        FaceEntry entry = entries.remove(token);
-        if (entry == null) {
-            return null;
-        }
-        if (Instant.now().isAfter(entry.expiresAt)) {
-            return null;
-        }
-        return entry;
+        FaceEntry[] holder = new FaceEntry[1];
+        entries.computeIfPresent(token, (key, entry) -> {
+            if (Instant.now().isAfter(entry.expiresAt)) {
+                return null; // expired -> drop
+            }
+            holder[0] = entry;
+            int remaining = entry.remainingReads().decrementAndGet();
+            return remaining > 0 ? entry : null; // last read -> remove
+        });
+        return holder[0];
     }
 
     /** Evicts everything immediately; used on shutdown/tests. */
@@ -166,10 +190,11 @@ public class FaceUrlStore {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("entries", entries.size());
         out.put("ttlSeconds", TTL_SECONDS);
+        out.put("maxReads", MAX_READS);
         out.put("baseUrl", baseUrl());
         return out;
     }
 
-    public record FaceEntry(String employeeNo, byte[] imageBytes, Instant expiresAt) {
+    public record FaceEntry(String employeeNo, byte[] imageBytes, Instant expiresAt, AtomicInteger remainingReads) {
     }
 }

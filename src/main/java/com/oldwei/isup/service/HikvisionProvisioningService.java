@@ -38,7 +38,22 @@ public class HikvisionProvisioningService {
     private static final String JPEG_CONTENT_TYPE = "image/jpeg";
     private static final String DEFAULT_BEGIN_TIME = "2020-01-01T00:00:00";
     private static final String DEFAULT_END_TIME = "2037-12-31T23:59:59";
-    private static final int FACE_PASSTHROUGH_TIMEOUT_MS = 10000;
+    /**
+     * Receive timeout for binary multipart / URL-mode face enrollment ISAPI
+     * calls. Device face-modeling/upload via
+     * {@code POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json} is slow
+     * (warming up the analysis module, large payloads over CMS tunnel);
+     * the prior 10s ceiling produced {@code sdkError=10}
+     * ({@code PHOTO_ERR_TRANSPORT}) mid-upload. Bumped to 45s so the device
+     * has room to finish while still bounding hung sessions.
+     */
+    static final int FACE_PASSTHROUGH_TIMEOUT_MS = 45000;
+    /**
+     * Receive timeout for the FDLib face-delete (upsert eviction) call. The
+     * delete is a quick JSON ack and never hit a timeout in the field, so we
+     * keep its previous 10s value isolated from the face-upload bump.
+     */
+    private static final int FACE_DELETE_TIMEOUT_MS = 10000;
     /**
      * Upper bound on the number of characters of a face-upload device
      * {@code rawResponse} we print at INFO. The device error bodies are tiny
@@ -471,7 +486,7 @@ public class HikvisionProvisioningService {
 
         // Sanitized log: NEVER print faceUrl value or bytes, only structural
         // info to confirm the right shape is on the wire.
-        log.info("Face upload (URL mode) prepared: deviceId={}, employeeNo={}, mode={}, shape={}, faceLibType={}, FDID={}, FPID={}, urlKey={}, payloadHasFaceURL={}, payloadHasFaceUrl={}, payloadBytes={}, isapiUrl={}",
+        log.info("Face upload (URL mode) prepared: deviceId={}, employeeNo={}, mode={}, shape={}, faceLibType={}, FDID={}, FPID={}, urlKey={}, payloadHasFaceURL={}, payloadHasFaceUrl={}, payloadBytes={}, isapiUrl={}, recvTimeoutMs={}",
                 device.getDeviceId(),
                 employeeNo,
                 mode.name(),
@@ -483,7 +498,8 @@ public class HikvisionProvisioningService {
                 payload.contains("\"faceURL\""),
                 payload.contains("\"faceUrl\""),
                 payloadBytes.length,
-                url);
+                url,
+                FACE_PASSTHROUGH_TIMEOUT_MS);
 
         CmsUtil.IsapiPassThroughResult result = cmsUtil.passThroughBytesWithStatus(
                 device.getLoginId(),
@@ -534,7 +550,7 @@ public class HikvisionProvisioningService {
         byte[] multipartBody = buildFaceMultipartBody(employeeNo, face.bytes(), boundary, mode);
         String url = buildFaceUrl(boundary, mode);
 
-        log.info("Face upload prepared: deviceId={}, employeeNo={}, mode={}, faceDataRecordJson={}, originalBytes={}, originalProgressive={}, normalizedBytes={}, normalizedProgressive={}, srcSize={}, normalizedSize={}, multipartBytes={}, contentType=multipart/form-data, boundary={}, isapiUrl={}, imageFieldName={}, multipartPreamble={}",
+        log.info("Face upload (multipart mode) prepared: deviceId={}, employeeNo={}, mode={}, faceDataRecordJson={}, originalBytes={}, originalProgressive={}, normalizedBytes={}, normalizedProgressive={}, srcSize={}, normalizedSize={}, multipartBytes={}, contentType=multipart/form-data, boundary={}, isapiUrl={}, imageFieldName={}, recvTimeoutMs={}, multipartPreamble={}",
                 device.getDeviceId(),
                 employeeNo,
                 mode.name(),
@@ -549,6 +565,7 @@ public class HikvisionProvisioningService {
                 boundary,
                 url,
                 mode.imageFieldName(),
+                FACE_PASSTHROUGH_TIMEOUT_MS,
                 describeMultipartPreamble(multipartBody));
 
         CmsUtil.IsapiPassThroughResult result = cmsUtil.passThroughBytesWithStatus(
@@ -815,7 +832,7 @@ public class HikvisionProvisioningService {
                 device.getLoginId(),
                 url,
                 bodyBytes,
-                FACE_PASSTHROUGH_TIMEOUT_MS
+                FACE_DELETE_TIMEOUT_MS
         );
         String raw = result.getRawResponse();
         boolean transportOk = result.isSuccess() && StringUtils.isBlank(result.getSdkError());
