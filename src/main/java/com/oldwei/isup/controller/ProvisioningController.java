@@ -83,6 +83,15 @@ public class ProvisioningController {
         if (ProvisioningStatus.FAILED.equals(result.getBridgeStatus())) {
             return response(HttpStatus.ERROR, "Provisioning failed.", result);
         }
+        // PARTIAL: the access-control user was synced, but photo enrollment
+        // failed (face already exists, photo modeling rejection, no photo
+        // provided, etc.). HTTP 200 - NOT 500 - so the caller can treat the
+        // photo rejection as a soft warning and re-sync the face separately.
+        // The structured photoErrorCode / photoSubStatusCode on the body tell
+        // Laravel exactly what went wrong without it having to parse rawResponse.
+        if (ProvisioningStatus.PARTIAL.equals(result.getBridgeStatus())) {
+            return ResponseEntity.ok(R.ok("Provisioning completed with photo warnings.", result));
+        }
 
         return ResponseEntity.ok(R.ok(result));
     }
@@ -116,6 +125,9 @@ public class ProvisioningController {
         ProvisioningResponse result = provisioningService.syncFace(deviceOpt.get(), employeeNo, request);
         if (ProvisioningStatus.FAILED.equals(result.getBridgeStatus())) {
             return response(HttpStatus.ERROR, "Face provisioning failed.", result);
+        }
+        if (ProvisioningStatus.PARTIAL.equals(result.getBridgeStatus())) {
+            return ResponseEntity.ok(R.ok("Face sync completed with warnings.", result));
         }
 
         return ResponseEntity.ok(R.ok(result));
