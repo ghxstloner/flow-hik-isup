@@ -378,12 +378,10 @@ public class HikvisionProvisioningService {
             JSONObject root = JSON.parseObject(rawResponse);
             JSONObject userInfoSearch = root.getJSONObject("UserInfoSearch");
             UserCountParseResult result = firstIntegerField(userInfoSearch,
-                    "numOfMatches",
-                    "numOfMatches",
                     "totalMatches",
                     "totalMatches",
-                    "total",
-                    "total");
+                    "numOfMatches",
+                    "numOfMatches");
             if (result.userCount() != null) {
                 return result;
             }

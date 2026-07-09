@@ -7,35 +7,54 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HikvisionProvisioningServiceTest {
 
     @Test
-    void parseUserCountUsesNumOfMatchesFirst() {
+    void parseUserCountUsesTotalMatchesBeforePagedNumOfMatches() {
         HikvisionProvisioningService.UserCountParseResult result = HikvisionProvisioningService.parseUserCount("""
                 {
                   "UserInfoSearch": {
-                    "numOfMatches": 123,
-                    "totalMatches": 456,
+                    "responseStatusStrg": "MORE",
+                    "numOfMatches": 1,
+                    "totalMatches": 111,
                     "UserInfo": [{"employeeNo": "1"}]
                   }
                 }
                 """);
 
-        assertThat(result.userCount()).isEqualTo(123);
-        assertThat(result.rawTotalField()).isEqualTo("numOfMatches");
+        assertThat(result.userCount()).isEqualTo(111);
+        assertThat(result.rawTotalField()).isEqualTo("totalMatches");
         assertThat(result.parseError()).isNull();
     }
 
     @Test
-    void parseUserCountFallsBackToTotalMatches() {
+    void parseUserCountFallsBackToNumOfMatches() {
         HikvisionProvisioningService.UserCountParseResult result = HikvisionProvisioningService.parseUserCount("""
                 {
                   "UserInfoSearch": {
-                    "totalMatches": 77,
+                    "numOfMatches": 77,
                     "UserInfo": [{"employeeNo": "1"}]
                   }
                 }
                 """);
 
         assertThat(result.userCount()).isEqualTo(77);
-        assertThat(result.rawTotalField()).isEqualTo("totalMatches");
+        assertThat(result.rawTotalField()).isEqualTo("numOfMatches");
+        assertThat(result.parseError()).isNull();
+    }
+
+    @Test
+    void parseUserCountFallsBackToUserInfoArraySize() {
+        HikvisionProvisioningService.UserCountParseResult result = HikvisionProvisioningService.parseUserCount("""
+                {
+                  "UserInfoSearch": {
+                    "UserInfo": [
+                      {"employeeNo": "1"},
+                      {"employeeNo": "2"}
+                    ]
+                  }
+                }
+                """);
+
+        assertThat(result.userCount()).isEqualTo(2);
+        assertThat(result.rawTotalField()).isEqualTo("UserInfoSearch.UserInfo.size");
         assertThat(result.parseError()).isNull();
     }
 
