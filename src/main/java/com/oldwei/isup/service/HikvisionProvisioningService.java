@@ -11,6 +11,7 @@ import com.oldwei.isup.model.provisioning.ProvisioningEmployee;
 import com.oldwei.isup.model.provisioning.ProvisioningPhoto;
 import com.oldwei.isup.model.provisioning.ProvisioningResponse;
 import com.oldwei.isup.model.provisioning.ProvisioningStatus;
+import com.oldwei.isup.model.provisioning.UserCountResponse;
 import com.oldwei.isup.model.provisioning.UserVerificationResponse;
 import com.oldwei.isup.model.provisioning.UserDeleteRequest;
 import com.oldwei.isup.model.provisioning.UserSyncRequest;
@@ -35,6 +36,7 @@ public class HikvisionProvisioningService {
 
     private static final String SET_UP_USER_URL = "PUT /ISAPI/AccessControl/UserInfo/SetUp?format=json";
     private static final String SEARCH_USER_URL = "POST /ISAPI/AccessControl/UserInfo/Search?format=json";
+    private static final String USER_SEARCH_SOURCE = "ISAPI/AccessControl/UserInfo/Search";
     private static final String JPEG_CONTENT_TYPE = "image/jpeg";
     private static final String DEFAULT_BEGIN_TIME = "2020-01-01T00:00:00";
     private static final String DEFAULT_END_TIME = "2037-12-31T23:59:59";
@@ -61,6 +63,7 @@ public class HikvisionProvisioningService {
      * for debuggability while keeping log lines bounded.
      */
     private static final int FACE_RAW_RESPONSE_LOG_LIMIT = 4096;
+    private static final int USER_COUNT_RAW_RESPONSE_LOG_LIMIT = 2000;
 
     // ---- Structured photo-error codes (stable contract for PHP) ----
     /** Device already has a face for this {@code FPID} / {@code employeeNo}. */
@@ -269,6 +272,47 @@ public class HikvisionProvisioningService {
         );
     }
 
+    public UserCountResponse countUsers(Device device) {
+        log.info("Hikvision user count requested: deviceId={}, loginId={}",
+                device.getDeviceId(), device.getLoginId());
+
+        CmsUtil.IsapiPassThroughResult result;
+        try {
+            result = cmsUtil.passThroughWithStatus(
+                    device.getLoginId(),
+                    SEARCH_USER_URL,
+                    buildUserCountPayload()
+            );
+        } catch (RuntimeException e) {
+            log.error("Hikvision user count passthrough exception: deviceId={}, sdkError={}",
+                    device.getDeviceId(), e.getMessage(), e);
+            return userCountResponse(device, null, null, "FAILED", "", e.getMessage());
+        }
+
+        if (!result.isSuccess() || StringUtils.isNotBlank(result.getSdkError())) {
+            log.warn("Hikvision user count passthrough failed: deviceId={}, sdkError={}, rawResponse={}",
+                    device.getDeviceId(), result.getSdkError(), truncateUserCountRaw(result.getRawResponse()));
+            return userCountResponse(device, null, null, "FAILED", result.getRawResponse(), result.getSdkError());
+        }
+
+        UserCountParseResult parsed = parseUserCount(result.getRawResponse());
+        if (parsed.parseError() != null) {
+            log.warn("Hikvision user count response parse failed: deviceId={}, error={}, rawResponse={}",
+                    device.getDeviceId(), parsed.parseError(), truncateUserCountRaw(result.getRawResponse()));
+            return userCountResponse(device, null, null, "FAILED", result.getRawResponse(), parsed.parseError());
+        }
+        if (parsed.userCount() == null) {
+            log.warn("Hikvision user count response has no detectable total: deviceId={}, rawResponse={}",
+                    device.getDeviceId(), truncateUserCountRaw(result.getRawResponse()));
+            return userCountResponse(device, null, null, "PARTIAL", result.getRawResponse(), null);
+        }
+
+        log.info("Hikvision user count result: deviceId={}, userCount={}, rawTotalField={}",
+                device.getDeviceId(), parsed.userCount(), parsed.rawTotalField());
+        return userCountResponse(device, parsed.userCount(), parsed.rawTotalField(), "SYNCED",
+                result.getRawResponse(), null);
+    }
+
     private String buildUserInfoPayload(String employeeNo, UserSyncRequest request) {
         ProvisioningEmployee employee = request.getEmployee();
         ProvisioningAccess access = request.getAccess();
@@ -311,6 +355,113 @@ public class HikvisionProvisioningService {
         payload.put("UserInfoSearchCond", condition);
 
         return JSON.toJSONString(payload);
+    }
+
+    private String buildUserCountPayload() {
+        Map<String, Object> condition = new LinkedHashMap<>();
+        condition.put("searchID", UUID.randomUUID().toString());
+        condition.put("searchResultPosition", 0);
+        condition.put("maxResults", 1);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("UserInfoSearchCond", condition);
+
+        return JSON.toJSONString(payload);
+    }
+
+    static UserCountParseResult parseUserCount(String rawResponse) {
+        if (StringUtils.isBlank(rawResponse)) {
+            return new UserCountParseResult(null, null, "empty response");
+        }
+
+        try {
+            JSONObject root = JSON.parseObject(rawResponse);
+            JSONObject userInfoSearch = root.getJSONObject("UserInfoSearch");
+            UserCountParseResult result = firstIntegerField(userInfoSearch,
+                    "numOfMatches",
+                    "numOfMatches",
+                    "totalMatches",
+                    "totalMatches",
+                    "total",
+                    "total");
+            if (result.userCount() != null) {
+                return result;
+            }
+
+            JSONObject condition = root.getJSONObject("UserInfoSearchCond");
+            result = firstIntegerField(condition, "numOfMatches", "UserInfoSearchCond.numOfMatches");
+            if (result.userCount() != null) {
+                return result;
+            }
+
+            Integer userInfoSize = userInfoSize(userInfoSearch);
+            if (userInfoSize != null) {
+                return new UserCountParseResult(userInfoSize, "UserInfoSearch.UserInfo.size", null);
+            }
+
+            return new UserCountParseResult(null, null, null);
+        } catch (Exception e) {
+            return new UserCountParseResult(null, null, e.getMessage());
+        }
+    }
+
+    private static UserCountParseResult firstIntegerField(JSONObject json, String... fieldAndRawNamePairs) {
+        if (json == null) {
+            return new UserCountParseResult(null, null, null);
+        }
+        for (int i = 0; i + 1 < fieldAndRawNamePairs.length; i += 2) {
+            Integer value = integerValue(json.get(fieldAndRawNamePairs[i]));
+            if (value != null) {
+                return new UserCountParseResult(value, fieldAndRawNamePairs[i + 1], null);
+            }
+        }
+        return new UserCountParseResult(null, null, null);
+    }
+
+    private static Integer integerValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value instanceof String text && StringUtils.isNotBlank(text)) {
+            try {
+                return Integer.parseInt(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static Integer userInfoSize(JSONObject userInfoSearch) {
+        if (userInfoSearch == null) {
+            return null;
+        }
+        Object userInfo = userInfoSearch.get("UserInfo");
+        if (userInfo instanceof JSONArray users) {
+            return users.size();
+        }
+        if (userInfo instanceof JSONObject) {
+            return 1;
+        }
+        return null;
+    }
+
+    private UserCountResponse userCountResponse(
+            Device device,
+            Integer userCount,
+            String rawTotalField,
+            String bridgeStatus,
+            String rawResponse,
+            String sdkError) {
+        return new UserCountResponse(
+                device.getDeviceId(),
+                userCount,
+                USER_SEARCH_SOURCE,
+                rawTotalField,
+                bridgeStatus,
+                rawResponse,
+                sdkError
+        );
     }
 
     public String validatePhoto(ProvisioningPhoto photo) {
@@ -787,6 +938,15 @@ public class HikvisionProvisioningService {
                 : value.substring(0, FACE_RAW_RESPONSE_LOG_LIMIT) + "...(truncated)";
     }
 
+    private String truncateUserCountRaw(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= USER_COUNT_RAW_RESPONSE_LOG_LIMIT
+                ? value
+                : value.substring(0, USER_COUNT_RAW_RESPONSE_LOG_LIMIT) + "...(truncated)";
+    }
+
     /**
      * Evicts an existing face record from the configured FDLib so a follow-up
      * {@code POST /ISAPI/Intelligent/FDLib/FaceDataRecord} can re-enroll the
@@ -983,5 +1143,8 @@ public class HikvisionProvisioningService {
                     this.photoSubStatusCode
             );
         }
+    }
+
+    record UserCountParseResult(Integer userCount, String rawTotalField, String parseError) {
     }
 }

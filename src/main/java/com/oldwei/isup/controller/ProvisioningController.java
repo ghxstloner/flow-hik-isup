@@ -10,6 +10,7 @@ import com.oldwei.isup.model.provisioning.ProvisioningStatus;
 import com.oldwei.isup.model.provisioning.RawIsapiRequest;
 import com.oldwei.isup.model.provisioning.RawIsapiResponse;
 import com.oldwei.isup.model.provisioning.UserDeleteRequest;
+import com.oldwei.isup.model.provisioning.UserCountResponse;
 import com.oldwei.isup.model.provisioning.UserSyncRequest;
 import com.oldwei.isup.model.provisioning.UserVerificationResponse;
 import com.oldwei.isup.service.BridgeAuthService;
@@ -190,6 +191,35 @@ public class ProvisioningController {
         return ResponseEntity.ok(R.ok(result));
     }
 
+    @GetMapping("/users/count")
+    public ResponseEntity<R<UserCountResponse>> countUsers(
+            @PathVariable String deviceId,
+            @RequestHeader(value = TOKEN_HEADER, required = false) String token) {
+
+        if (!bridgeAuthService.isAuthorized(token)) {
+            UserCountResponse body = userCountResponse(deviceId, null, null, "UNAUTHORIZED", "", null);
+            return response(HttpStatus.UNAUTHORIZED, "Unauthorized.", body);
+        }
+
+        if (!hikFeatureProperties.getProvisioning().isEnabled() || !hikFeatureProperties.getRawIsapi().isEnabled()) {
+            UserCountResponse body = userCountResponse(deviceId, null, null, "FEATURE_DISABLED", "", null);
+            return response(HttpStatus.SERVICE_UNAVAILABLE, "User count endpoint is disabled.", body);
+        }
+
+        Optional<Device> deviceOpt = onlineDevice(deviceId);
+        if (deviceOpt.isEmpty()) {
+            UserCountResponse body = userCountResponse(deviceId, null, null, "OFFLINE", "", "offline");
+            return response(HttpStatus.CONFLICT, "Device is not online.", body);
+        }
+
+        UserCountResponse result = provisioningService.countUsers(deviceOpt.get());
+        if ("FAILED".equals(result.getBridgeStatus())) {
+            return response(HttpStatus.ERROR, "User count failed.", result);
+        }
+
+        return ResponseEntity.ok(R.ok(result));
+    }
+
     @PostMapping("/isapi")
     public ResponseEntity<R<RawIsapiResponse>> rawIsapi(
             @PathVariable String deviceId,
@@ -270,6 +300,24 @@ public class ProvisioningController {
             String rawResponse,
             String sdkError) {
         return new UserVerificationResponse(deviceId, employeeNo, found, bridgeStatus, rawResponse, sdkError);
+    }
+
+    private UserCountResponse userCountResponse(
+            String deviceId,
+            Integer userCount,
+            String rawTotalField,
+            String bridgeStatus,
+            String rawResponse,
+            String sdkError) {
+        return new UserCountResponse(
+                deviceId,
+                userCount,
+                "ISAPI/AccessControl/UserInfo/Search",
+                rawTotalField,
+                bridgeStatus,
+                rawResponse,
+                sdkError
+        );
     }
 
     private <T> ResponseEntity<R<T>> response(int status, String message, T body) {

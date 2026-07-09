@@ -111,6 +111,13 @@ curl -X PUT "http://localhost:16233/api/devices/1/users/456" \
   -d '{"employee":{"employeeNo":"456"}}'
 ```
 
+Count registered users through the online ISUP session:
+
+```shell
+curl -X GET "http://localhost:16233/api/devices/1/users/count" \
+  -H "X-Flow-Bridge-Token: $FLOW_BRIDGE_TOKEN"
+```
+
 ## Docker
 
 Build the image:
